@@ -4,17 +4,25 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 let mongod: MongoMemoryServer | null = null;
 
 export const connectDB = async () => {
+  if (mongoose.connection.readyState >= 1) {
+    return;
+  }
+
   const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/SpectaclesShopDB';
 
-  // 1. Try configured MongoDB first (with 2-second timeout)
+  // 1. Try configured MongoDB first (with 5-second timeout for serverless)
   try {
     const conn = await mongoose.connect(uri, {
-      serverSelectionTimeoutMS: 2000,
+      serverSelectionTimeoutMS: 5000,
     });
     console.log(`[MongoDB] Connected successfully to host: ${conn.connection.host}, database: ${conn.connection.name}`);
     return;
   } catch (error: any) {
     console.warn(`[MongoDB] Local/remote MongoDB is not reachable on ${uri}`);
+    if (process.env.VERCEL) {
+      console.error('[MongoDB] Running on Vercel, cannot start memory server. Check MONGODB_URI in Vercel environment variables.');
+      throw error;
+    }
     console.log('[MongoDB] Starting embedded MongoDB server automatically so the ERP can run immediately...');
   }
 

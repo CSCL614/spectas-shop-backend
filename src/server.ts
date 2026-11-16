@@ -28,12 +28,13 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Health Check
-app.get('/api/health', (_req: Request, res: Response) => {
+app.get(['/', '/health', '/api/health'], (_req: Request, res: Response) => {
   res.json({
     status: 'UP',
     service: 'Spectacles Shop Management ERP Backend (Node.js/Express)',
     timestamp: new Date().toISOString(),
     uptimeSeconds: Math.floor(process.uptime()),
+    database: 'SpectaclesShopDB (MongoDB Atlas)',
   });
 });
 
@@ -65,12 +66,21 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   });
 });
 
-// Start Server
-const startServer = async () => {
-  try {
+// App initialization helper for both standalone and serverless
+let isInitialized = false;
+export const initApp = async () => {
+  if (!isInitialized) {
     await connectDB();
     await seedPredefinedUsers();
     await seedDummySales(false);
+    isInitialized = true;
+  }
+};
+
+// Start Server (standalone mode)
+const startServer = async () => {
+  try {
+    await initApp();
 
     app.listen(PORT, () => {
       console.log(`=======================================================`);
@@ -86,5 +96,10 @@ const startServer = async () => {
   }
 };
 
-startServer();
+// Only listen on port in standalone mode (not when imported as a Vercel serverless function)
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
 
