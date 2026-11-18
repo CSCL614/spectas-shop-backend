@@ -140,6 +140,14 @@ export const changePassword = async (req: AuthRequest, res: Response): Promise<v
       res.status(401).json({ success: false, message: 'Unauthorized', data: null });
       return;
     }
+    if (req.user.role !== 'ADMIN') {
+      res.status(403).json({
+        success: false,
+        message: 'Access denied: Only Administrators are permitted to change passwords.',
+        data: null,
+      });
+      return;
+    }
     const { currentPassword, newPassword } = req.body;
     if (!currentPassword || !newPassword) {
       res.status(400).json({ success: false, message: 'Current password and new password are required', data: null });

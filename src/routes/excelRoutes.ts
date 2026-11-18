@@ -9,8 +9,9 @@ import {
   getUploadedSheets,
   getUploadedSheetById,
   downloadUploadedSheet,
+  deleteUploadedSheet,
 } from '../controllers/excelController';
-import { authMiddleware } from '../middlewares/auth';
+import { authMiddleware, requireAdmin } from '../middlewares/auth';
 import { MAX_EXCEL_FILE_SIZE_BYTES } from '../utils/blobStorage';
 
 const router = Router();
@@ -32,9 +33,10 @@ router.post('/import', upload.single('file'), importSales);
 
 router.get('/export', exportSales);
 
-// Private Uploaded Excel Sheets metadata & authenticated streaming download (`get()` with `access: 'private'`)
+// Private Uploaded Excel Sheets metadata, authenticated streaming download & admin deletion
 router.get('/uploaded-sheets', getUploadedSheets);
 router.get('/uploaded-sheets/:id', getUploadedSheetById);
 router.get('/uploaded-sheets/:id/download', downloadUploadedSheet);
+router.delete('/uploaded-sheets/:id', requireAdmin, deleteUploadedSheet);
 
 export default router;

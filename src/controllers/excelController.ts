@@ -16,6 +16,7 @@ import {
   createScopedExcelUploadToken,
   getPrivateExcelBlob,
   readPrivateExcelBlobToBuffer,
+  deletePrivateExcelBlob,
 } from '../utils/blobStorage';
 
 const getIndianTimeStr = (): string => {
@@ -756,6 +757,60 @@ export const downloadUploadedSheet = async (req: AuthRequest, res: Response): Pr
     if (!res.headersSent) {
       res.status(500).json({ success: false, message: error.message || 'Failed to download file' });
     }
+  }
+};
+
+export const deleteUploadedSheet = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    if (req.user?.role !== 'ADMIN') {
+      res.status(403).json({
+        success: false,
+        message: 'Access denied: Only Administrators can delete Excel sheets',
+        data: null,
+      });
+      return;
+    }
+
+    const file = await UploadedFile.findById(req.params.id);
+    if (!file) {
+      res.status(404).json({ success: false, message: 'Excel sheet record not found', data: null });
+      return;
+    }
+
+    const blobRef = file.blobUrl || file.blobPathname;
+    if (blobRef) {
+      try {
+        await deletePrivateExcelBlob(blobRef);
+      } catch (blobErr: any) {
+        // Log non-fatal blob deletion warning so orphaned DB metadata can still be cleaned up
+        console.warn('Warning deleting private Excel blob:', blobErr?.message || blobErr);
+      }
+    }
+
+    await UploadedFile.findByIdAndDelete(file._id);
+
+    await AuditLog.create({
+      action: 'DELETE_EXCEL_SHEET',
+      entityType: 'EXCEL',
+      entityId: file._id.toString(),
+      performedBy: req.user.id,
+      performedByName: req.user.fullName,
+      details: `Deleted uploaded Excel sheet "${file.originalFileName}" (originally uploaded by ${file.salespersonName})`,
+      timestamp: new Date().toISOString(),
+    });
+
+    res.json({
+      success: true,
+      message: `Excel sheet "${file.originalFileName}" deleted successfully`,
+      data: null,
+    });
+  } catch (error: any) {
+    console.error('deleteUploadedSheet error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to delete Excel sheet',
+      data: null,
+    });
   }
 };
 

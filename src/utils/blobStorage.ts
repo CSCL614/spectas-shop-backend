@@ -1,4 +1,4 @@
-import { put, get, type PutBlobResult, type GetBlobResult } from '@vercel/blob';
+import { put, get, del, type PutBlobResult, type GetBlobResult } from '@vercel/blob';
 import { generateClientTokenFromReadWriteToken } from '@vercel/blob/client';
 
 export const MAX_EXCEL_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -123,5 +123,13 @@ export const readPrivateExcelBlobToBuffer = async (urlOrPathname: string): Promi
     if (value) chunks.push(value);
   }
   return Buffer.concat(chunks);
+};
+
+/**
+ * Permanently delete a private Excel file from Vercel Blob Storage using `del()`.
+ */
+export const deletePrivateExcelBlob = async (urlOrPathname: string): Promise<void> => {
+  if (!isBlobStorageConfigured() || !urlOrPathname) return;
+  await del(urlOrPathname, getBlobAuthOptions());
 };
 
