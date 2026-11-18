@@ -23,13 +23,23 @@ export const createFeedback = async (req: AuthRequest, res: Response): Promise<v
     let targetSalespersonId = req.user?.id || '';
     let targetSalespersonName = req.user?.fullName || '';
 
-    // If orderId is provided, try to find the matching sale to associate the salesperson
-    if (orderId) {
-      const cleanOrderId = String(orderId).trim().toUpperCase();
+    // If orderId is provided, normalize to STK- format and find matching sale
+    let formattedOrderId = orderId ? String(orderId).trim().toUpperCase() : '';
+    if (formattedOrderId && /^\d+$/.test(formattedOrderId)) {
+      formattedOrderId = `STK-${formattedOrderId}`;
+    }
+
+    if (formattedOrderId) {
+      const numericOnly = formattedOrderId.replace(/^STK-/i, '');
       const sale = await Sale.findOne({
-        $or: [{ stickerNumber: cleanOrderId }, { _id: cleanOrderId.length === 24 ? cleanOrderId : null }],
+        $or: [
+          { stickerNumber: formattedOrderId },
+          { stickerNumber: numericOnly },
+          { _id: formattedOrderId.length === 24 ? formattedOrderId : null },
+        ],
       });
       if (sale) {
+        formattedOrderId = sale.stickerNumber;
         targetSalespersonId = sale.salespersonId;
         targetSalespersonName = sale.salespersonName;
       }
@@ -38,7 +48,7 @@ export const createFeedback = async (req: AuthRequest, res: Response): Promise<v
     const newFeedback = await CustomerFeedback.create({
       patientName: String(patientName).trim(),
       patientPhone: String(patientPhone).trim(),
-      orderId: orderId ? String(orderId).trim().toUpperCase() : '',
+      orderId: formattedOrderId,
       rating: numRating,
       feedback: String(feedback).trim(),
       feedbackDate: todayStr,
@@ -97,10 +107,18 @@ export const getAllFeedback = async (req: AuthRequest, res: Response): Promise<v
 
     if (search) {
       const regex = { $regex: search, $options: 'i' };
+      const orderIdPatterns: any[] = [{ orderId: regex }];
+      if (/^\d+$/.test(search.trim())) {
+        orderIdPatterns.push({ orderId: { $regex: `STK-${search.trim()}`, $options: 'i' } });
+      }
+      const stkMatch = search.trim().match(/^STK-?(\d+)$/i);
+      if (stkMatch) {
+        orderIdPatterns.push({ orderId: stkMatch[1] });
+      }
       query.$or = [
         { patientName: regex },
         { patientPhone: regex },
-        { orderId: regex },
+        ...orderIdPatterns,
         { feedback: regex },
       ];
     }

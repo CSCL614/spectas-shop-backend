@@ -41,7 +41,7 @@ export const getNextAtomicStickerNumber = async (): Promise<string> => {
     { new: true, upsert: true }
   );
 
-  return String(updatedCounter.seq);
+  return `STK-${updatedCounter.seq}`;
 };
 
 export const getNextStickerNumberPreview = async (_req: AuthRequest, res: Response): Promise<void> => {
@@ -66,7 +66,7 @@ export const getNextStickerNumberPreview = async (_req: AuthRequest, res: Respon
     res.json({
       success: true,
       message: 'Next sequential sticker number preview',
-      data: { nextStickerNumber: String(nextNum) },
+      data: { nextStickerNumber: `STK-${nextNum}` },
     });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message, data: null });
@@ -139,8 +139,21 @@ export const getAllSales = async (req: AuthRequest, res: Response): Promise<void
 
     if (search) {
       const searchRegex = { $regex: search, $options: 'i' };
-      query.$or = [
+      // Support searching by both STK-1016 and 1016 formats
+      const stickerSearchPatterns: any[] = [
         { stickerNumber: searchRegex },
+      ];
+      // If user searches for a plain number like 1016, also match STK-1016
+      if (/^\d+$/.test(search.trim())) {
+        stickerSearchPatterns.push({ stickerNumber: { $regex: `STK-${search.trim()}`, $options: 'i' } });
+      }
+      // If user searches for STK-1016, also match plain 1016
+      const stkMatch = search.trim().match(/^STK-?(\d+)$/i);
+      if (stkMatch) {
+        stickerSearchPatterns.push({ stickerNumber: stkMatch[1] });
+      }
+      query.$or = [
+        ...stickerSearchPatterns,
         { customerName: searchRegex },
         { customerMobile: searchRegex },
         { companyName: searchRegex },
@@ -320,11 +333,21 @@ export const createSale = async (req: AuthRequest, res: Response): Promise<void>
       return;
     }
 
-    // Atomic Sequential Sticker Number Generation
+    // Atomic Sequential Sticker Number Generation with STK- prefix
     let cleanSticker = stickerNumber ? String(stickerNumber).trim().toUpperCase() : '';
     if (!cleanSticker) {
       cleanSticker = await getNextAtomicStickerNumber();
     } else {
+      // Ensure STK- prefix on manually provided sticker numbers
+      if (/^\d+$/.test(cleanSticker)) {
+        cleanSticker = `STK-${cleanSticker}`;
+      } else if (!cleanSticker.startsWith('STK-')) {
+        // Extract numeric part and re-prefix
+        const numMatch = cleanSticker.match(/(\d+)/);
+        if (numMatch) {
+          cleanSticker = `STK-${numMatch[1]}`;
+        }
+      }
       // Check if provided sticker exists
       const existing = await Sale.findOne({ stickerNumber: cleanSticker });
       if (existing) {

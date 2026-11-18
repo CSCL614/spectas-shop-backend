@@ -1,10 +1,25 @@
 import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs';
+import { list } from '@vercel/blob';
+
+// Load .env first, then override with .env.local for local development
 dotenv.config();
+const envLocalCandidates = [
+  path.resolve(process.cwd(), '.env.local'),
+  path.resolve(__dirname, '..', '.env.local'),
+];
+for (const candidate of envLocalCandidates) {
+  if (fs.existsSync(candidate)) {
+    dotenv.config({ path: candidate, override: true });
+    break;
+  }
+}
 
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { connectDB } from './config/db';
-import { seedPredefinedUsers, seedDummySales } from './utils/seeder';
+import { seedPredefinedUsers, seedDummySales, migrateStickerNumbersToSTK } from './utils/seeder';
 
 import authRoutes from './routes/authRoutes';
 import salesRoutes from './routes/salesRoutes';
@@ -20,10 +35,14 @@ const PORT = process.env.PORT || 8099;
 // Middleware
 app.use(
   cors({
-    origin: '*',
+    origin: true,
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    exposedHeaders: ['Content-Disposition'],
   })
 );
+app.options('*', cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -31,11 +50,64 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.get(['/', '/health', '/api/health'], (_req: Request, res: Response) => {
   res.json({
     status: 'UP',
-    service: 'Spectacles Shop Management ERP Backend (Node.js/Express)',
+    service: 'Sri Sai Opticals ERP Backend (Node.js/Express)',
     timestamp: new Date().toISOString(),
     uptimeSeconds: Math.floor(process.uptime()),
     database: 'SpectaclesShopDB (MongoDB Atlas)',
   });
+});
+
+// Safe Vercel Blob Storage Configuration & Read-Only Connectivity Check
+app.get('/api/health/blob', async (_req: Request, res: Response) => {
+  const storeIdConfigured = Boolean(process.env.BLOB_STORE_ID && process.env.BLOB_STORE_ID.trim());
+  const tokenConfigured = Boolean(
+    process.env.BLOB_READ_WRITE_TOKEN && process.env.BLOB_READ_WRITE_TOKEN.trim()
+  );
+
+  const missingVars: string[] = [];
+  if (!storeIdConfigured) missingVars.push('BLOB_STORE_ID');
+  if (!tokenConfigured) missingVars.push('BLOB_READ_WRITE_TOKEN');
+
+  if (!tokenConfigured) {
+    res.status(503).json({
+      success: false,
+      blobConfigured: false,
+      storeIdConfigured,
+      tokenConfigured,
+      connectionStatus: 'not_configured',
+      message: `Vercel Blob Storage is missing required environment variable(s): ${missingVars.join(', ')}.`,
+    });
+    return;
+  }
+
+  try {
+    // Safe read-only connectivity check (does not upload, modify, or delete any files)
+    await list({
+      limit: 1,
+      token: process.env.BLOB_READ_WRITE_TOKEN,
+    });
+
+    const fullyConfigured = storeIdConfigured && tokenConfigured;
+    res.json({
+      success: fullyConfigured,
+      blobConfigured: fullyConfigured,
+      storeIdConfigured,
+      tokenConfigured,
+      connectionStatus: 'connected',
+      message: fullyConfigured
+        ? 'Vercel Blob Storage is configured successfully.'
+        : `Connected to Vercel Blob, but missing optional/expected variable: ${missingVars.join(', ')}.`,
+    });
+  } catch (error: any) {
+    res.status(502).json({
+      success: false,
+      blobConfigured: false,
+      storeIdConfigured,
+      tokenConfigured,
+      connectionStatus: 'error',
+      message: `Vercel Blob connectivity check failed: ${error?.name || 'BlobError'} - ${error?.message || 'Unable to reach Vercel Blob store'}`,
+    });
+  }
 });
 
 // Routes
@@ -73,6 +145,7 @@ export const initApp = async () => {
     await connectDB();
     await seedPredefinedUsers();
     await seedDummySales(false);
+    await migrateStickerNumbersToSTK();
     isInitialized = true;
   }
 };
@@ -84,7 +157,7 @@ const startServer = async () => {
 
     app.listen(PORT, () => {
       console.log(`=======================================================`);
-      console.log(` Spectacles ERP Node.js Backend is running!`);
+      console.log(` Sri Sai Opticals ERP Node.js Backend is running!`);
       console.log(` Port:    http://localhost:${PORT}`);
       console.log(` Health:  http://localhost:${PORT}/api/health`);
       console.log(` Database: MongoDB (SpectaclesShopDB)`);

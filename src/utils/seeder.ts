@@ -1,9 +1,66 @@
 import bcrypt from 'bcryptjs';
 import { User, IUser } from '../models/User';
 import { Sale } from '../models/Sale';
+import { Counter } from '../models/Counter';
 import { CustomerFeedback } from '../models/CustomerFeedback';
 import { AuditLog } from '../models/AuditLog';
 import { DiscountType } from '../types';
+
+export const migrateStickerNumbersToSTK = async (): Promise<void> => {
+  try {
+    const allSales = await Sale.find().select('_id stickerNumber').lean();
+    const existingSet = new Set<string>(
+      allSales.map((s) => String(s.stickerNumber || '').trim().toUpperCase())
+    );
+
+    let migratedCount = 0;
+    let maxSeq = 0;
+
+    for (const s of allSales) {
+      const raw = String(s.stickerNumber || '').trim().toUpperCase();
+      if (!raw) continue;
+
+      const digits = raw.match(/\d+/g);
+      if (digits && digits.length > 0) {
+        const num = parseInt(digits[digits.length - 1], 10);
+        if (!isNaN(num) && num > maxSeq) {
+          maxSeq = num;
+        }
+      }
+
+      // Safely migrate purely numeric sticker numbers (e.g., "1016" -> "STK-1016")
+      if (/^\d+$/.test(raw)) {
+        const target = `STK-${raw}`;
+        if (!existingSet.has(target)) {
+          await Sale.updateOne({ _id: s._id }, { $set: { stickerNumber: target } });
+          await CustomerFeedback.updateMany({ orderId: raw }, { $set: { orderId: target } });
+          existingSet.delete(raw);
+          existingSet.add(target);
+          migratedCount++;
+        } else {
+          console.warn(`[Migration] Skipped migrating "${raw}" to "${target}" because "${target}" already exists.`);
+        }
+      }
+    }
+
+    // Ensure atomic counter is at least maxSeq (never reset downwards to 1001)
+    if (maxSeq > 0) {
+      const counter = await Counter.findById('stickerNumber');
+      if (!counter) {
+        await Counter.create({ _id: 'stickerNumber', seq: Math.max(1000, maxSeq) });
+      } else if (counter.seq < maxSeq) {
+        counter.seq = maxSeq;
+        await counter.save();
+      }
+    }
+
+    if (migratedCount > 0) {
+      console.log(`[Migration] Safely migrated ${migratedCount} numeric sticker numbers to STK- format. Highest sequence: ${maxSeq}`);
+    }
+  } catch (error) {
+    console.error('[Migration] Error migrating sticker numbers:', error);
+  }
+};
 
 const formatDate = (date: Date): string => {
   return date.toISOString().split('T')[0];
@@ -41,9 +98,8 @@ export const seedPredefinedUsers = async (): Promise<IUser[]> => {
 
   for (const item of usersToSeed) {
     let user = await User.findOne({ username: item.username.toLowerCase() });
-    const hashedPassword = await bcrypt.hash(item.rawPassword, 10);
-
     if (!user) {
+      const hashedPassword = await bcrypt.hash(item.rawPassword, 10);
       user = await User.create({
         username: item.username.toLowerCase(),
         password: hashedPassword,
@@ -53,13 +109,6 @@ export const seedPredefinedUsers = async (): Promise<IUser[]> => {
         active: item.active,
       });
       console.log(`[Seeder] Created default user: ${item.username} (${item.role})`);
-    } else {
-      user.password = hashedPassword;
-      user.role = item.role;
-      user.fullName = item.fullName;
-      user.email = item.email;
-      user.active = true;
-      await user.save();
     }
     results.push(user);
   }
