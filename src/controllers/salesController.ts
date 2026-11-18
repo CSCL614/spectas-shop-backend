@@ -1,10 +1,44 @@
 import { Response } from 'express';
+import mongoose from 'mongoose';
 import { AuthRequest, IPaymentTransaction, DiscountType, DeliveryStatus } from '../types';
 import { Sale, ISale } from '../models/Sale';
 import { User } from '../models/User';
 import { AuditLog } from '../models/AuditLog';
 import { Counter } from '../models/Counter';
 import { CustomerFeedback } from '../models/CustomerFeedback';
+
+const escapeRegex = (value: string): string => value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+
+/**
+ * Resolves owner/creator filter for Sale queries while preserving strict role-based isolation.
+ * - SALESPERSON: always locked to req.user.id
+ * - ADMIN with 'ADMIN' filter: strictly matches orders whose salespersonId belongs to an actual ADMIN user
+ * - ADMIN with specific userId: matches that exact user's orders
+ * - ADMIN with empty filter: matches all orders
+ */
+const applyOwnerFilter = async (
+  req: AuthRequest,
+  query: Record<string, any>,
+  filterValue?: string
+): Promise<void> => {
+  if (req.user?.role === 'SALESPERSON') {
+    query.salespersonId = req.user.id;
+    return;
+  }
+
+  const trimmed = String(filterValue || '').trim();
+  if (!trimmed) return;
+
+  if (trimmed.toUpperCase() === 'ADMIN') {
+    const adminUsers = await User.find({ role: 'ADMIN' }).select('_id').lean();
+    const adminIds = adminUsers.map((u) => u._id.toString());
+    // Strictly match real Admin user IDs — never match empty or undefined salespersonId
+    query.salespersonId = { $in: adminIds };
+    return;
+  }
+
+  query.salespersonId = trimmed;
+};
 
 export const getIndianDateStr = (d: Date = new Date()): string => {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
@@ -90,12 +124,8 @@ export const getAllSales = async (req: AuthRequest, res: Response): Promise<void
 
     const query: any = {};
 
-    // Role-based data isolation
-    if (req.user?.role === 'SALESPERSON') {
-      query.salespersonId = req.user.id;
-    } else if (salespersonId) {
-      query.salespersonId = salespersonId;
-    }
+    // Role-based data isolation & Admin/Salesperson owner filtering
+    await applyOwnerFilter(req, query, salespersonId);
 
     if (deliveryStatus && (deliveryStatus === 'PENDING' || deliveryStatus === 'DELIVERED')) {
       query.deliveryStatus = deliveryStatus;
@@ -138,7 +168,8 @@ export const getAllSales = async (req: AuthRequest, res: Response): Promise<void
     }
 
     if (search) {
-      const searchRegex = { $regex: search, $options: 'i' };
+      const safeSearch = escapeRegex(search);
+      const searchRegex = { $regex: safeSearch, $options: 'i' };
       // Support searching by both STK-1016 and 1016 formats
       const stickerSearchPatterns: any[] = [
         { stickerNumber: searchRegex },
@@ -152,13 +183,17 @@ export const getAllSales = async (req: AuthRequest, res: Response): Promise<void
       if (stkMatch) {
         stickerSearchPatterns.push({ stickerNumber: stkMatch[1] });
       }
-      query.$or = [
+      const searchConditions: any[] = [
         ...stickerSearchPatterns,
         { customerName: searchRegex },
         { customerMobile: searchRegex },
         { companyName: searchRegex },
         { paymentMethod: searchRegex },
       ];
+      if (mongoose.Types.ObjectId.isValid(search.trim())) {
+        searchConditions.push({ _id: new mongoose.Types.ObjectId(search.trim()) });
+      }
+      query.$or = searchConditions;
     }
 
     const totalElements = await Sale.countDocuments(query);
@@ -877,11 +912,7 @@ export const getDashboardStats = async (req: AuthRequest, res: Response): Promis
     const filterSalesperson = req.query.salespersonId ? String(req.query.salespersonId).trim() : '';
 
     const query: any = {};
-    if (req.user?.role === 'SALESPERSON') {
-      query.salespersonId = req.user.id;
-    } else if (filterSalesperson) {
-      query.salespersonId = filterSalesperson;
-    }
+    await applyOwnerFilter(req, query, filterSalesperson);
 
     if (dateFrom && dateTo) {
       query.saleDate = { $gte: dateFrom, $lte: dateTo };
@@ -1187,5 +1218,231 @@ export const deleteSale = async (req: AuthRequest, res: Response): Promise<void>
     res.json({ success: true, message: 'Sale deleted successfully', data: null });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message, data: null });
+  }
+};
+
+export interface SearchSuggestionItem {
+  id: string;
+  type: 'customer' | 'phone' | 'sticker' | 'brand' | 'order';
+  label: string;
+  sublabel: string;
+  value: string;
+  orderId?: string;
+  customerIdentifier?: string;
+  badge?: string;
+}
+
+export const getSearchSuggestions = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const q = String(req.query.q || '').trim();
+    const salespersonId = req.query.salespersonId ? String(req.query.salespersonId).trim() : '';
+
+    const baseQuery: Record<string, any> = {};
+    await applyOwnerFilter(req, baseQuery, salespersonId);
+
+    const suggestions: SearchSuggestionItem[] = [];
+    const seenKeys = new Set<string>();
+
+    const pushUnique = (item: SearchSuggestionItem, uniqueKey: string) => {
+      if (seenKeys.has(uniqueKey)) return;
+      seenKeys.add(uniqueKey);
+      suggestions.push(item);
+    };
+
+    if (!q) {
+      // Focus / empty-query suggestions: recent orders, customers & top brands
+      const recent = await Sale.find(baseQuery)
+        .sort({ createdAt: -1 })
+        .limit(12)
+        .select('stickerNumber customerName customerMobile companyName sellingPrice remainingBalance deliveryStatus')
+        .lean();
+
+      for (const s of recent) {
+        if (suggestions.filter((i) => i.type === 'sticker').length < 4) {
+          pushUnique(
+            {
+              id: `sticker-${s._id.toString()}`,
+              type: 'sticker',
+              label: s.stickerNumber,
+              sublabel: `${s.customerName} • ${s.companyName}`,
+              value: s.stickerNumber,
+              orderId: s._id.toString(),
+              badge: s.deliveryStatus === 'DELIVERED' ? 'Delivered' : 'Pending',
+            },
+            `sticker:${s.stickerNumber}`
+          );
+        }
+        if (suggestions.filter((i) => i.type === 'customer').length < 4) {
+          pushUnique(
+            {
+              id: `customer-${s.customerMobile || s.customerName}`,
+              type: 'customer',
+              label: s.customerName,
+              sublabel: s.customerMobile,
+              value: s.customerName,
+              customerIdentifier: s.customerMobile || s.customerName,
+            },
+            `customer:${(s.customerMobile || s.customerName).toLowerCase()}`
+          );
+        }
+        if (suggestions.filter((i) => i.type === 'brand').length < 3 && s.companyName) {
+          pushUnique(
+            {
+              id: `brand-${s.companyName}`,
+              type: 'brand',
+              label: s.companyName,
+              sublabel: 'Filter by Brand / Company',
+              value: s.companyName,
+            },
+            `brand:${s.companyName.toLowerCase()}`
+          );
+        }
+      }
+
+      res.json({ success: true, message: 'Recent suggestions retrieved', data: suggestions });
+      return;
+    }
+
+    const safeQ = escapeRegex(q);
+    const regex = { $regex: safeQ, $options: 'i' };
+    const lowerQ = q.toLowerCase();
+
+    const orConditions: any[] = [
+      { stickerNumber: regex },
+      { customerName: regex },
+      { customerMobile: regex },
+      { companyName: regex },
+    ];
+
+    if (/^\d+$/.test(q)) {
+      orConditions.push({ stickerNumber: { $regex: `STK-${q}`, $options: 'i' } });
+    }
+    const stkMatch = q.match(/^STK-?(\d+)$/i);
+    if (stkMatch) {
+      orConditions.push({ stickerNumber: stkMatch[1] });
+    }
+    if (mongoose.Types.ObjectId.isValid(q)) {
+      orConditions.push({ _id: new mongoose.Types.ObjectId(q) });
+    }
+
+    const matchedSales = await Sale.find({
+      ...baseQuery,
+      $or: orConditions,
+    })
+      .sort({ createdAt: -1 })
+      .limit(25)
+      .select('stickerNumber customerName customerMobile companyName sellingPrice remainingBalance deliveryStatus productType')
+      .lean();
+
+    // Also allow partial hex Order ID matching against recent orders when query looks like hex (>= 4 chars)
+    let idMatches: any[] = [];
+    if (/^[a-f0-9]{4,24}$/i.test(q) && !mongoose.Types.ObjectId.isValid(q)) {
+      const recentForId = await Sale.find(baseQuery)
+        .sort({ createdAt: -1 })
+        .limit(80)
+        .select('stickerNumber customerName customerMobile companyName deliveryStatus')
+        .lean();
+      idMatches = recentForId.filter((s) => s._id.toString().toLowerCase().includes(lowerQ)).slice(0, 3);
+    }
+
+    // 1. Sticker matches (up to 4)
+    for (const s of matchedSales) {
+      if (suggestions.filter((i) => i.type === 'sticker').length >= 4) break;
+      const stk = (s.stickerNumber || '').toLowerCase();
+      if (stk.includes(lowerQ) || (stkMatch && stk.includes(stkMatch[1]))) {
+        pushUnique(
+          {
+            id: `sticker-${s._id.toString()}`,
+            type: 'sticker',
+            label: s.stickerNumber,
+            sublabel: `${s.customerName} • ${s.companyName}`,
+            value: s.stickerNumber,
+            orderId: s._id.toString(),
+            badge: s.deliveryStatus === 'DELIVERED' ? 'Delivered' : 'Pending',
+          },
+          `sticker:${s.stickerNumber}`
+        );
+      }
+    }
+
+    // 2. Customer name matches (up to 4)
+    for (const s of matchedSales) {
+      if (suggestions.filter((i) => i.type === 'customer').length >= 4) break;
+      if ((s.customerName || '').toLowerCase().includes(lowerQ)) {
+        pushUnique(
+          {
+            id: `customer-${s.customerMobile || s.customerName}`,
+            type: 'customer',
+            label: s.customerName,
+            sublabel: `${s.customerMobile} • ${s.stickerNumber}`,
+            value: s.customerName,
+            customerIdentifier: s.customerMobile || s.customerName,
+          },
+          `customer:${(s.customerMobile || s.customerName).toLowerCase()}`
+        );
+      }
+    }
+
+    // 3. Phone number matches (up to 3)
+    for (const s of matchedSales) {
+      if (suggestions.filter((i) => i.type === 'phone').length >= 3) break;
+      if ((s.customerMobile || '').toLowerCase().includes(lowerQ)) {
+        pushUnique(
+          {
+            id: `phone-${s.customerMobile}`,
+            type: 'phone',
+            label: s.customerMobile,
+            sublabel: `${s.customerName} • ${s.stickerNumber}`,
+            value: s.customerMobile,
+            customerIdentifier: s.customerMobile,
+          },
+          `phone:${s.customerMobile}`
+        );
+      }
+    }
+
+    // 4. Company / Brand matches (up to 3)
+    for (const s of matchedSales) {
+      if (suggestions.filter((i) => i.type === 'brand').length >= 3) break;
+      if ((s.companyName || '').toLowerCase().includes(lowerQ)) {
+        pushUnique(
+          {
+            id: `brand-${s.companyName}`,
+            type: 'brand',
+            label: s.companyName,
+            sublabel: `Filter orders by brand "${s.companyName}"`,
+            value: s.companyName,
+          },
+          `brand:${s.companyName.toLowerCase()}`
+        );
+      }
+    }
+
+    // 5. Order ID matches (exact or partial hex)
+    const combinedIdMatches = [
+      ...matchedSales.filter((s) => s._id.toString().toLowerCase().includes(lowerQ)),
+      ...idMatches,
+    ];
+    for (const s of combinedIdMatches) {
+      if (suggestions.filter((i) => i.type === 'order').length >= 3) break;
+      const oid = s._id.toString();
+      pushUnique(
+        {
+          id: `order-${oid}`,
+          type: 'order',
+          label: `Order ${s.stickerNumber}`,
+          sublabel: `ID: ${oid} • ${s.customerName}`,
+          value: s.stickerNumber,
+          orderId: oid,
+          badge: 'Order ID',
+        },
+        `order:${oid}`
+      );
+    }
+
+    res.json({ success: true, message: 'Search suggestions retrieved', data: suggestions });
+  } catch (error: any) {
+    console.error('getSearchSuggestions error:', error);
+    res.status(500).json({ success: false, message: error.message, data: [] });
   }
 };

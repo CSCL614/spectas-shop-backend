@@ -13,6 +13,7 @@ import {
   getNextStickerNumberPreview,
   getOverdueSales,
   getCustomerProfile,
+  getSearchSuggestions,
 } from '../controllers/salesController';
 import { seedDummySales } from '../utils/seeder';
 import { authMiddleware, requireAdmin } from '../middlewares/auth';
@@ -26,6 +27,7 @@ router.get('/dashboard/stats', getDashboardStats);
 router.get('/daily-statement', getDailyStatement);
 router.get('/next-sticker-number', getNextStickerNumberPreview);
 router.get('/overdue', getOverdueSales);
+router.get('/search-suggestions', getSearchSuggestions);
 router.get('/customer/:identifier', getCustomerProfile);
 
 router.post('/seed-dummy', requireAdmin, async (_req: AuthRequest, res) => {
