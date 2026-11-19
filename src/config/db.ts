@@ -1,3 +1,4 @@
+import dns from 'dns';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 
@@ -9,6 +10,15 @@ export const connectDB = async () => {
   }
 
   const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/SpectaclesShopDB';
+
+  // Fix for Node.js on Windows resolving MongoDB Atlas SRV records
+  if (uri.startsWith('mongodb+srv://')) {
+    try {
+      dns.setServers(['8.8.8.8', '1.1.1.1']);
+    } catch {
+      // Fallback silently if setting custom DNS servers is restricted
+    }
+  }
 
   // 1. Try configured MongoDB first (with 5-second timeout for serverless)
   try {
