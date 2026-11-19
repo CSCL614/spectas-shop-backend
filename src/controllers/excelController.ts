@@ -373,7 +373,7 @@ export const downloadTemplate = async (_req: AuthRequest, res: Response): Promis
     });
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', 'attachment; filename="sri_sai_opticals_template.xlsx"');
+    res.setHeader('Content-Disposition', 'attachment; filename="sri_sai_smart_opticals_template.xlsx"');
 
     await workbook.xlsx.write(res);
     res.end();
@@ -833,7 +833,9 @@ export const exportSales = async (req: AuthRequest, res: Response): Promise<void
     const sales = await Sale.find(query).sort({ createdAt: -1 });
 
     const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet('Sri Sai Opticals Report');
+    workbook.creator = 'SRI SAI SMART OPTICALS SOFTWARE';
+    workbook.description = 'A Clear Vision for Better Business';
+    const sheet = workbook.addWorksheet('Sri Sai Smart Opticals');
 
     sheet.columns = [
       { header: 'Sticker No', key: 'stickerNumber', width: 16 },
@@ -876,7 +878,7 @@ export const exportSales = async (req: AuthRequest, res: Response): Promise<void
     });
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', 'attachment; filename="sri_sai_opticals_export.xlsx"');
+    res.setHeader('Content-Disposition', 'attachment; filename="sri_sai_smart_opticals_export.xlsx"');
 
     await workbook.xlsx.write(res);
     res.end();

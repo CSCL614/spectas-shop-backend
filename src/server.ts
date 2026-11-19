@@ -50,7 +50,8 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.get(['/', '/health', '/api/health'], (_req: Request, res: Response) => {
   res.json({
     status: 'UP',
-    service: 'Sri Sai Opticals ERP Backend (Node.js/Express)',
+    service: 'SRI SAI SMART OPTICALS SOFTWARE Backend (Node.js/Express)',
+    tagline: 'A Clear Vision for Better Business',
     timestamp: new Date().toISOString(),
     uptimeSeconds: Math.floor(process.uptime()),
     database: 'SpectaclesShopDB (MongoDB Atlas)',
@@ -157,7 +158,8 @@ const startServer = async () => {
 
     app.listen(PORT, () => {
       console.log(`=======================================================`);
-      console.log(` Sri Sai Opticals ERP Node.js Backend is running!`);
+      console.log(` SRI SAI SMART OPTICALS SOFTWARE Backend is running!`);
+      console.log(` Tagline: A Clear Vision for Better Business`);
       console.log(` Port:    http://localhost:${PORT}`);
       console.log(` Health:  http://localhost:${PORT}/api/health`);
       console.log(` Database: MongoDB (SpectaclesShopDB)`);
