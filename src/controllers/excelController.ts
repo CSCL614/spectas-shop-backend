@@ -101,37 +101,63 @@ const processExcelBufferAndPersistMetadata = async ({
   const todayStr = getIndianDateStr();
   const timeStr = getIndianTimeStr();
 
-  const rowsData: { rowNumber: number; cells: string[] }[] = [];
+  const rowsData: { rowNumber: number; row: ExcelJS.Row }[] = [];
   worksheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return; // Header row
-    const getCell = (idx: number) => {
-      const val = row.getCell(idx).value;
-      if (val === null || val === undefined) return '';
-      if (typeof val === 'object' && (val as any).text) return String((val as any).text).trim();
-      if (val instanceof Date) return val.toISOString().split('T')[0];
-      return String(val).trim();
-    };
-    const cells: string[] = [];
-    for (let i = 1; i <= 13; i++) {
-      cells.push(getCell(i));
-    }
-    rowsData.push({ rowNumber, cells });
+    rowsData.push({ rowNumber, row });
   });
 
-  for (const { rowNumber, cells } of rowsData) {
-    const sticker = cells[0].toUpperCase();
-    const company = cells[1];
-    const rawType = cells[2].toUpperCase();
-    const rawCost = cells[3];
-    const rawOrigSelling = cells[4];
-    const rawDiscType = cells[5].toUpperCase();
-    const rawDiscVal = cells[6];
-    const rawAdvance = cells[7];
-    const rawPayMethod = cells[8];
-    const rawDelDate = cells[9];
-    const rawDelStatus = cells[10].toUpperCase();
-    const custName = cells[11];
-    const custMobile = cells[12];
+  // Detect column indices dynamically from row 1
+  const headerRow = worksheet.getRow(1);
+  const colMap: Record<string, number> = {};
+  headerRow.eachCell((cell, colNumber) => {
+    const txt = String(cell.value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (txt.includes('sticker') || txt.includes('unique') || txt.includes('code') || txt === 'id') colMap['stickerNumber'] = colNumber;
+    else if (txt.includes('company') || (txt.includes('brand') && !txt.includes('unique'))) colMap['companyName'] = colNumber;
+    else if (txt === 'frames' || txt === 'frame') colMap['frames'] = colNumber;
+    else if (txt === 'lenses' || txt === 'lens' || txt === 'lense') colMap['lenses'] = colNumber;
+    else if (txt.includes('type') || txt.includes('category')) colMap['productType'] = colNumber;
+    else if (txt.includes('quantity') || txt === 'qty' || txt === 'stock') colMap['quantity'] = colNumber;
+    else if (txt.includes('cost')) colMap['costPrice'] = colNumber;
+    else if (txt.includes('selling') || txt.includes('mrp') || txt.includes('orig')) colMap['originalSellingPrice'] = colNumber;
+    else if (txt.includes('discounttype')) colMap['discountType'] = colNumber;
+    else if (txt.includes('discountval') || txt.includes('discountvalue')) colMap['discountValue'] = colNumber;
+    else if (txt.includes('advance')) colMap['advanceAmount'] = colNumber;
+    else if (txt.includes('payment') || txt.includes('method')) colMap['paymentMethod'] = colNumber;
+    else if (txt.includes('deliverydate') || txt.includes('expected')) colMap['expectedDeliveryDate'] = colNumber;
+    else if (txt.includes('deliverystatus') || txt.includes('status')) colMap['deliveryStatus'] = colNumber;
+    else if (txt.includes('customername') || txt.includes('customer') || txt.includes('patient')) colMap['customerName'] = colNumber;
+    else if (txt.includes('mobile') || txt.includes('phone') || txt.includes('contact')) colMap['customerMobile'] = colNumber;
+  });
+
+  const getCellVal = (row: ExcelJS.Row, idx?: number) => {
+    if (!idx) return '';
+    const val = row.getCell(idx).value;
+    if (val === null || val === undefined) return '';
+    if (typeof val === 'object' && (val as any).text) return String((val as any).text).trim();
+    if (val instanceof Date) return val.toISOString().split('T')[0];
+    return String(val).trim();
+  };
+
+  const hasFramesCol = !!colMap['frames'] || !!colMap['lenses'];
+
+  for (const { rowNumber, row } of rowsData) {
+    const sticker = getCellVal(row, colMap['stickerNumber'] || 1).toUpperCase();
+    const company = getCellVal(row, colMap['companyName'] || 2);
+    const rawFrames = getCellVal(row, colMap['frames'] || (hasFramesCol ? 3 : 0));
+    const rawLenses = getCellVal(row, colMap['lenses'] || (hasFramesCol ? 4 : 0));
+    const rawType = getCellVal(row, colMap['productType'] || (!hasFramesCol ? 3 : 0)).toUpperCase();
+    const rawQty = getCellVal(row, colMap['quantity'] || (hasFramesCol ? 5 : 0));
+    const rawCost = getCellVal(row, colMap['costPrice'] || (hasFramesCol ? 6 : 4));
+    const rawOrigSelling = getCellVal(row, colMap['originalSellingPrice'] || (hasFramesCol ? 7 : 5));
+    const rawDiscType = getCellVal(row, colMap['discountType'] || (hasFramesCol ? 8 : 6)).toUpperCase();
+    const rawDiscVal = getCellVal(row, colMap['discountValue'] || (hasFramesCol ? 9 : 7));
+    const rawAdvance = getCellVal(row, colMap['advanceAmount'] || (hasFramesCol ? 10 : 8));
+    const rawPayMethod = getCellVal(row, colMap['paymentMethod'] || (hasFramesCol ? 11 : 9));
+    const rawDelDate = getCellVal(row, colMap['expectedDeliveryDate'] || (hasFramesCol ? 12 : 10));
+    const rawDelStatus = getCellVal(row, colMap['deliveryStatus'] || (hasFramesCol ? 13 : 11)).toUpperCase();
+    const custName = getCellVal(row, colMap['customerName'] || (hasFramesCol ? 14 : 12));
+    const custMobile = getCellVal(row, colMap['customerMobile'] || (hasFramesCol ? 15 : 13));
 
     if (!sticker && !company && !custName) continue; // Empty row
 
@@ -140,14 +166,41 @@ const processExcelBufferAndPersistMetadata = async ({
       continue;
     }
 
-    // Validate Product Type
-    let productType = 'FRAME';
-    if (rawType === 'FRAME' || rawType === 'LENS') {
-      productType = rawType;
-    } else {
-      errors.push({ rowNumber, field: 'Product Type', error: "Must be 'Frame' or 'Lens'", rawValue: rawType });
+    // Determine Product Type: Frames vs Lenses rules
+    const hasFrames = rawFrames && rawFrames.trim() !== '-' && rawFrames.trim() !== '' && rawFrames.trim() !== '0';
+    const hasLenses = rawLenses && rawLenses.trim() !== '-' && rawLenses.trim() !== '' && rawLenses.trim() !== '0';
+
+    if (hasFrames && hasLenses) {
+      errors.push({
+        rowNumber,
+        field: 'Frames / Lenses',
+        error: 'A product cannot have both Frames and Lenses populated. Specify "Frames" with "-" for Lenses, or "-" for Frames with "Lenses".',
+      });
       continue;
     }
+
+    let productType = 'FRAME';
+    if (hasFrames) {
+      productType = 'FRAME';
+    } else if (hasLenses) {
+      productType = 'LENS';
+    } else if (rawType) {
+      if (rawType === 'FRAME' || rawType === 'LENS') {
+        productType = rawType;
+      } else {
+        errors.push({ rowNumber, field: 'Product Type', error: "Must be 'Frame' or 'Lens'", rawValue: rawType });
+        continue;
+      }
+    } else {
+      errors.push({
+        rowNumber,
+        field: 'Frames / Lenses',
+        error: "Please specify 'Frames' in Frames column or 'Lenses' in Lenses column (with '-' in the other column)",
+      });
+      continue;
+    }
+
+    const itemQuantity = Math.max(1, parseInt(rawQty, 10) || 1);
 
     const costPrice = Number(rawCost) || 0;
     const origSelling = Number(rawOrigSelling) || 0;
@@ -316,8 +369,10 @@ export const downloadTemplate = async (_req: AuthRequest, res: Response): Promis
 
     sheet.columns = [
       { header: 'Sticker Number*', key: 'stickerNumber', width: 18 },
-      { header: 'Company / Brand*', key: 'companyName', width: 20 },
-      { header: 'Product Type (Frame/Lens)*', key: 'productType', width: 26 },
+      { header: 'Company Name*', key: 'companyName', width: 20 },
+      { header: 'Frames', key: 'frames', width: 14 },
+      { header: 'Lenses', key: 'lenses', width: 14 },
+      { header: 'Quantity*', key: 'quantity', width: 14 },
       { header: 'Cost Price*', key: 'costPrice', width: 14 },
       { header: 'Original Selling Price*', key: 'originalSellingPrice', width: 22 },
       { header: 'Discount Type (PERCENTAGE/FIXED/NONE)', key: 'discountType', width: 34 },
@@ -341,11 +396,13 @@ export const downloadTemplate = async (_req: AuthRequest, res: Response): Promis
     headerRow.height = 28;
 
     sheet.addRow({
-      stickerNumber: 'STK-3001',
+      stickerNumber: 'STK-1001',
       companyName: 'Ray-Ban',
-      productType: 'Frame',
-      costPrice: 2500,
-      originalSellingPrice: 5000,
+      frames: 'Frames',
+      lenses: '-',
+      quantity: 10,
+      costPrice: 2800,
+      originalSellingPrice: 4500,
       discountType: 'FIXED',
       discountValue: 500,
       advanceAmount: 2000,
@@ -357,19 +414,39 @@ export const downloadTemplate = async (_req: AuthRequest, res: Response): Promis
     });
 
     sheet.addRow({
-      stickerNumber: 'STK-3002',
-      companyName: 'Essilor Crizal',
-      productType: 'Lens',
-      costPrice: 1800,
-      originalSellingPrice: 4200,
+      stickerNumber: 'STK-1002',
+      companyName: 'Essilor',
+      frames: '-',
+      lenses: 'Lenses',
+      quantity: 20,
+      costPrice: 1500,
+      originalSellingPrice: 2500,
       discountType: 'PERCENTAGE',
       discountValue: 10,
-      advanceAmount: 3780,
+      advanceAmount: 2250,
       paymentMethod: 'Cash',
       expectedDeliveryDate: '2026-11-18',
       deliveryStatus: 'DELIVERED',
       customerName: 'Priya Reddy',
       customerMobile: '9845012345',
+    });
+
+    sheet.addRow({
+      stickerNumber: 'STK-1003',
+      companyName: 'Oakley',
+      frames: 'Frames',
+      lenses: '-',
+      quantity: 5,
+      costPrice: 3200,
+      originalSellingPrice: 5200,
+      discountType: 'NONE',
+      discountValue: 0,
+      advanceAmount: 3000,
+      paymentMethod: 'Debit Card',
+      expectedDeliveryDate: '2026-11-22',
+      deliveryStatus: 'PENDING',
+      customerName: 'Vikram Singh',
+      customerMobile: '9812345678',
     });
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -838,11 +915,13 @@ export const exportSales = async (req: AuthRequest, res: Response): Promise<void
     const sheet = workbook.addWorksheet('Sri Sai Smart Opticals');
 
     sheet.columns = [
-      { header: 'Sticker No', key: 'stickerNumber', width: 16 },
-      { header: 'Brand / Company', key: 'companyName', width: 20 },
-      { header: 'Product Type', key: 'productType', width: 16 },
+      { header: 'Sticker Number', key: 'stickerNumber', width: 16 },
+      { header: 'Company Name', key: 'companyName', width: 20 },
+      { header: 'Frames', key: 'frames', width: 14 },
+      { header: 'Lenses', key: 'lenses', width: 14 },
+      { header: 'Quantity', key: 'quantity', width: 14 },
       { header: 'Cost Price (₹)', key: 'costPrice', width: 16 },
-      { header: 'Selling Price (₹)', key: 'sellingPrice', width: 18 },
+      { header: 'Original Selling Price (₹)', key: 'sellingPrice', width: 18 },
       { header: 'Advance (₹)', key: 'advanceAmount', width: 16 },
       { header: 'Balance (₹)', key: 'remainingBalance', width: 16 },
       { header: 'Profit (₹)', key: 'grossProfit', width: 16 },
@@ -859,12 +938,16 @@ export const exportSales = async (req: AuthRequest, res: Response): Promise<void
     header.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF172554' } };
 
     sales.forEach((s) => {
+      const isFrame = s.productType === 'FRAME';
+      const qty = s.items && s.items.length > 0 ? s.items.reduce((acc: number, it: any) => acc + (it.quantity || 1), 0) : 1;
       sheet.addRow({
         stickerNumber: s.stickerNumber,
         companyName: s.companyName,
-        productType: s.productType || 'UNSPECIFIED',
+        frames: isFrame ? 'Frames' : '-',
+        lenses: !isFrame ? 'Lenses' : '-',
+        quantity: qty,
         costPrice: s.costPrice,
-        sellingPrice: s.sellingPrice,
+        sellingPrice: s.originalSellingPrice || s.sellingPrice,
         advanceAmount: s.advanceAmount,
         remainingBalance: s.remainingBalance,
         grossProfit: s.grossProfit,

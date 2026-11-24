@@ -539,4 +539,228 @@ export const seedDummySales = async (force: boolean = false): Promise<number> =>
   return finalCount;
 };
 
+export const seedMasterProductsAndSuppliers = async (): Promise<void> => {
+  try {
+    const { Product } = await import('../models/Product');
+    const { Supplier } = await import('../models/Supplier');
+    const { SupplierInvoice } = await import('../models/SupplierInvoice');
+    const { InventoryLog } = await import('../models/InventoryLog');
+
+    const productCount = await Product.countDocuments();
+    if (productCount === 0) {
+      const sampleProducts = [
+        { brandName: 'Ray-Ban', productType: 'FRAME' as const, brandUniqueNumber: 'RB101', productIdentification: 'Aviator Classic Gold 58mm', price: 2500, costPrice: 1600, quantity: 15, frameQuantity: 15, lensQuantity: 0, lowStockThreshold: 5 },
+        { brandName: 'Ray-Ban', productType: 'FRAME' as const, brandUniqueNumber: 'RB102', productIdentification: 'Wayfarer Black Matte 54mm', price: 3200, costPrice: 2100, quantity: 12, frameQuantity: 12, lensQuantity: 0, lowStockThreshold: 5 },
+        { brandName: 'Essilor', productType: 'LENS' as const, brandUniqueNumber: 'ES201', productIdentification: 'Crizal Prevencia Blue-Cut Single Vision', price: 2800, costPrice: 1700, quantity: 25, frameQuantity: 0, lensQuantity: 25, lowStockThreshold: 5 },
+        { brandName: 'Essilor', productType: 'LENS' as const, brandUniqueNumber: 'ES205', productIdentification: 'Crizal Alize Anti-Glare Single Vision', price: 3000, costPrice: 1900, quantity: 20, frameQuantity: 0, lensQuantity: 20, lowStockThreshold: 5 },
+        { brandName: 'Oakley', productType: 'FRAME' as const, brandUniqueNumber: 'OK301', productIdentification: 'Holbrook Matte Black Prizm Polarized', price: 4500, costPrice: 2800, quantity: 10, frameQuantity: 10, lensQuantity: 0, lowStockThreshold: 5 },
+        { brandName: 'Titan Eye+', productType: 'FRAME' as const, brandUniqueNumber: 'TE401', productIdentification: 'Titanium Rimless Elegance Gunmetal', price: 1800, costPrice: 1100, quantity: 18, frameQuantity: 18, lensQuantity: 0, lowStockThreshold: 5 },
+        { brandName: 'Fastrack', productType: 'FRAME' as const, brandUniqueNumber: 'FT501', productIdentification: 'Sporty Wraparound Acetate Blue', price: 1200, costPrice: 750, quantity: 30, frameQuantity: 30, lensQuantity: 0, lowStockThreshold: 8 },
+        { brandName: 'Carrera', productType: 'FRAME' as const, brandUniqueNumber: 'CA601', productIdentification: 'Champion Pilot Heritage Black/Gold', price: 5200, costPrice: 3300, quantity: 8, frameQuantity: 8, lensQuantity: 0, lowStockThreshold: 4 },
+        { brandName: 'Vogue', productType: 'FRAME' as const, brandUniqueNumber: 'VO701', productIdentification: 'Cat-Eye Tortoise Chic Eyewear', price: 3800, costPrice: 2400, quantity: 14, frameQuantity: 14, lensQuantity: 0, lowStockThreshold: 5 },
+        { brandName: 'Zeiss', productType: 'LENS' as const, brandUniqueNumber: 'ZS801', productIdentification: 'DriveSafe Anti-Reflective Progressive', price: 6500, costPrice: 4200, quantity: 15, frameQuantity: 0, lensQuantity: 15, lowStockThreshold: 5 },
+        { brandName: 'Hoya', productType: 'LENS' as const, brandUniqueNumber: 'HY901', productIdentification: 'BlueControl Single Vision 1.60 Hi-Index', price: 2200, costPrice: 1400, quantity: 22, frameQuantity: 0, lensQuantity: 22, lowStockThreshold: 5 },
+      ];
+
+      for (const p of sampleProducts) {
+        const created = await Product.create(p);
+        await InventoryLog.create({
+          productUniqueNumber: p.brandUniqueNumber,
+          productId: created._id,
+          brandName: p.brandName,
+          productType: p.productType,
+          movementType: 'OPENING_STOCK',
+          quantity: p.quantity,
+          previousStock: 0,
+          newStock: p.quantity,
+          performedBy: 'system',
+          performedByName: 'System Setup',
+          notes: 'Initial Master Catalog Stock',
+          date: new Date().toISOString().split('T')[0],
+          time: '10:00:00',
+        });
+      }
+      console.log(`[Seeder] Seeded ${sampleProducts.length} initial Master Products and opening inventory.`);
+    }
+
+    const supplierCount = await Supplier.countDocuments();
+    if (supplierCount === 0) {
+      const sup1 = await Supplier.create({
+        supplierName: 'Luxottica India Eyewear Pvt Ltd',
+        contactPerson: 'Vikram Malhotra',
+        mobileNumber: '9811223344',
+        email: 'vikram.m@luxottica.com',
+        address: 'DLF Cyber City, Building 10, Gurugram, Haryana',
+      });
+
+      const sup2 = await Supplier.create({
+        supplierName: 'Essilor Vision India Pvt Ltd',
+        contactPerson: 'Anita Deshmukh',
+        mobileNumber: '9822334455',
+        email: 'anita.d@essilor.in',
+        address: 'Whitefield Main Road, Bengaluru, Karnataka',
+      });
+
+      const sup3 = await Supplier.create({
+        supplierName: 'Titan Company Optical Division',
+        contactPerson: 'Rajesh Verma',
+        mobileNumber: '9833445566',
+        email: 'rajesh.v@titan.co.in',
+        address: 'Electronic City Phase 1, Hosur Road, Bengaluru',
+      });
+
+      const todayStr = new Date().toISOString().split('T')[0];
+
+      // Sample invoice 1 (Fully Cleared)
+      await SupplierInvoice.create({
+        invoiceNumber: 'LUX-2026-881',
+        supplierId: sup1._id,
+        supplierName: sup1.supplierName,
+        invoiceDate: '2026-11-10',
+        invoiceTime: '11:30 AM',
+        products: [
+          {
+            brandName: 'Ray-Ban',
+            brandUniqueNumber: 'RB101',
+            productType: 'FRAME',
+            productIdentification: 'Aviator Classic Gold 58mm',
+            quantity: 15,
+            frameQuantity: 15,
+            lensQuantity: 0,
+            unitCost: 1600,
+            totalCost: 24000,
+          },
+          {
+            brandName: 'Oakley',
+            brandUniqueNumber: 'OK301',
+            productType: 'FRAME',
+            productIdentification: 'Holbrook Matte Black Prizm',
+            quantity: 10,
+            frameQuantity: 10,
+            lensQuantity: 0,
+            unitCost: 2800,
+            totalCost: 28000,
+          },
+        ],
+        totalQuantity: 25,
+        frameQuantity: 25,
+        lensQuantity: 0,
+        netPrice: 52000,
+        advanceAmount: 30000,
+        totalPaid: 52000,
+        balanceAmount: 0,
+        paymentType: 'Bank Transfer',
+        paymentStatus: 'CLEARED',
+        clearedAt: new Date('2026-11-12'),
+        clearedBy: 'System Administrator',
+        paymentHistory: [
+          {
+            receiptNumber: 'SRI-SUP-1001',
+            amount: 30000,
+            date: '2026-11-10',
+            time: '11:45 AM',
+            paymentMethod: 'Bank Transfer',
+            referenceNumber: 'NEFT-LUX-001',
+            remainingBalance: 22000,
+            recordedByName: 'System Administrator',
+            notes: 'Advance 60% on invoice receipt',
+          },
+          {
+            receiptNumber: 'SRI-SUP-1002',
+            amount: 22000,
+            date: '2026-11-12',
+            time: '04:15 PM',
+            paymentMethod: 'Bank Transfer',
+            referenceNumber: 'RTGS-LUX-002',
+            remainingBalance: 0,
+            recordedByName: 'System Administrator',
+            notes: 'Balance cleared after optical QC',
+          },
+        ],
+      });
+
+      // Sample invoice 2 (Partially Paid)
+      await SupplierInvoice.create({
+        invoiceNumber: 'ESS-2026-104',
+        supplierId: sup2._id,
+        supplierName: sup2.supplierName,
+        invoiceDate: '2026-11-15',
+        invoiceTime: '02:00 PM',
+        products: [
+          {
+            brandName: 'Essilor',
+            brandUniqueNumber: 'ES201',
+            productType: 'LENS',
+            productIdentification: 'Crizal Prevencia Blue-Cut Single Vision',
+            quantity: 25,
+            frameQuantity: 0,
+            lensQuantity: 25,
+            unitCost: 1700,
+            totalCost: 42500,
+          },
+        ],
+        totalQuantity: 25,
+        frameQuantity: 0,
+        lensQuantity: 25,
+        netPrice: 42500,
+        advanceAmount: 20000,
+        totalPaid: 20000,
+        balanceAmount: 22500,
+        paymentType: 'UPI',
+        paymentStatus: 'PARTIAL',
+        paymentHistory: [
+          {
+            receiptNumber: 'SRI-SUP-1003',
+            amount: 20000,
+            date: '2026-11-15',
+            time: '02:15 PM',
+            paymentMethod: 'UPI',
+            referenceNumber: 'UPI-ESS-992',
+            remainingBalance: 22500,
+            recordedByName: 'System Administrator',
+            notes: 'Advance deposit on order delivery',
+          },
+        ],
+      });
+
+      // Sample invoice 3 (Pending Balance)
+      await SupplierInvoice.create({
+        invoiceNumber: 'TIT-2026-440',
+        supplierId: sup3._id,
+        supplierName: sup3.supplierName,
+        invoiceDate: todayStr,
+        invoiceTime: '10:30 AM',
+        products: [
+          {
+            brandName: 'Titan Eye+',
+            brandUniqueNumber: 'TE401',
+            productType: 'FRAME',
+            productIdentification: 'Titanium Rimless Elegance Gunmetal',
+            quantity: 18,
+            frameQuantity: 18,
+            lensQuantity: 0,
+            unitCost: 1100,
+            totalCost: 19800,
+          },
+        ],
+        totalQuantity: 18,
+        frameQuantity: 18,
+        lensQuantity: 0,
+        netPrice: 19800,
+        advanceAmount: 0,
+        totalPaid: 0,
+        balanceAmount: 19800,
+        paymentType: 'Cash',
+        paymentStatus: 'PENDING',
+        paymentHistory: [],
+      });
+
+      console.log('[Seeder] Seeded 3 initial suppliers and purchase invoices.');
+    }
+  } catch (error) {
+    console.error('[Seeder] Error seeding master products/suppliers:', error);
+  }
+};
+
+
 

@@ -19,7 +19,7 @@ for (const candidate of envLocalCandidates) {
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { connectDB } from './config/db';
-import { seedPredefinedUsers, seedDummySales, migrateStickerNumbersToSTK } from './utils/seeder';
+import { seedPredefinedUsers, seedDummySales, migrateStickerNumbersToSTK, seedMasterProductsAndSuppliers } from './utils/seeder';
 
 import authRoutes from './routes/authRoutes';
 import salesRoutes from './routes/salesRoutes';
@@ -28,6 +28,8 @@ import adminRoutes from './routes/adminRoutes';
 import userRoutes from './routes/userRoutes';
 import feedbackRoutes from './routes/feedbackRoutes';
 import brandRoutes from './routes/brandRoutes';
+import productRoutes from './routes/productRoutes';
+import supplierRoutes from './routes/supplierRoutes';
 
 const app = express();
 const PORT = process.env.PORT || 8099;
@@ -119,6 +121,8 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/brands', brandRoutes);
+app.use('/api/products', productRoutes);
+app.use('/api/suppliers', supplierRoutes);
 
 // 404 handler
 app.use((_req: Request, res: Response) => {
@@ -147,6 +151,7 @@ export const initApp = async () => {
     await seedPredefinedUsers();
     await seedDummySales(false);
     await migrateStickerNumbersToSTK();
+    await seedMasterProductsAndSuppliers();
     isInitialized = true;
   }
 };

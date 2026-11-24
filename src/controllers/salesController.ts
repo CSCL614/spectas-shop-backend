@@ -1,11 +1,13 @@
 import { Response } from 'express';
 import mongoose from 'mongoose';
-import { AuthRequest, IPaymentTransaction, DiscountType, DeliveryStatus } from '../types';
+import { AuthRequest, IPaymentTransaction, DiscountType, DeliveryStatus, ISaleItem } from '../types';
 import { Sale, ISale } from '../models/Sale';
 import { User } from '../models/User';
 import { AuditLog } from '../models/AuditLog';
 import { Counter } from '../models/Counter';
 import { CustomerFeedback } from '../models/CustomerFeedback';
+import { Product } from '../models/Product';
+import { InventoryLog } from '../models/InventoryLog';
 
 const escapeRegex = (value: string): string => value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 
@@ -42,6 +44,122 @@ const applyOwnerFilter = async (
 
 export const getIndianDateStr = (d: Date = new Date()): string => {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
+};
+
+export const sanitizeSaleResponse = (saleDoc: any, isSalesperson: boolean) => {
+  if (!saleDoc) return saleDoc;
+  const json = saleDoc.toJSON ? saleDoc.toJSON() : { ...saleDoc };
+  if (isSalesperson) {
+    delete json.costPrice;
+    delete json.grossProfit;
+    if (Array.isArray(json.items)) {
+      json.items = json.items.map((it: any) => {
+        const itemCopy = { ...it };
+        delete itemCopy.costPrice;
+        return itemCopy;
+      });
+    }
+  }
+  return json;
+};
+
+export const handleStockTransition = async (
+  sale: ISale,
+  prevStatus: string,
+  newStatus: string,
+  user: any
+): Promise<void> => {
+  const isNowDelivered = newStatus === 'DELIVERED';
+  const wasDelivered = prevStatus === 'DELIVERED';
+
+  if (isNowDelivered && !sale.stockDeducted) {
+    const items = Array.isArray(sale.items) && sale.items.length > 0
+      ? sale.items
+      : [
+          {
+            brandName: sale.companyName,
+            productType: sale.productType === 'LENS' ? 'LENS' : 'FRAME',
+            brandUniqueNumber: sale.stickerNumber,
+            quantity: 1,
+          },
+        ];
+
+    for (const item of items) {
+      if (!item.brandUniqueNumber) continue;
+      const product = await Product.findOne({ brandUniqueNumber: item.brandUniqueNumber });
+      if (product) {
+        const prev = product.quantity;
+        const qty = item.quantity || 1;
+        const newQty = Math.max(0, prev - qty);
+        product.quantity = newQty;
+        product.frameQuantity = product.productType === 'FRAME' ? newQty : 0;
+        product.lensQuantity = product.productType === 'LENS' ? newQty : 0;
+        await product.save();
+
+        await InventoryLog.create({
+          productUniqueNumber: item.brandUniqueNumber,
+          productId: product._id,
+          brandName: item.brandName || product.brandName,
+          productType: item.productType || product.productType,
+          movementType: 'CUSTOMER_DELIVERED',
+          quantity: -qty,
+          previousStock: prev,
+          newStock: newQty,
+          referenceOrderNumber: sale.stickerNumber,
+          performedBy: user?.id || 'system',
+          performedByName: user?.fullName || 'User',
+          notes: `Stock deducted upon order delivery to ${sale.customerName} (Order ${sale.stickerNumber})`,
+          date: getIndianDateStr(),
+          time: new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }),
+        });
+      }
+    }
+    sale.stockDeducted = true;
+  } else if (!isNowDelivered && sale.stockDeducted) {
+    // Reversal of delivery: restore inventory
+    const items = Array.isArray(sale.items) && sale.items.length > 0
+      ? sale.items
+      : [
+          {
+            brandName: sale.companyName,
+            productType: sale.productType === 'LENS' ? 'LENS' : 'FRAME',
+            brandUniqueNumber: sale.stickerNumber,
+            quantity: 1,
+          },
+        ];
+
+    for (const item of items) {
+      if (!item.brandUniqueNumber) continue;
+      const product = await Product.findOne({ brandUniqueNumber: item.brandUniqueNumber });
+      if (product) {
+        const prev = product.quantity;
+        const qty = item.quantity || 1;
+        const newQty = prev + qty;
+        product.quantity = newQty;
+        product.frameQuantity = product.productType === 'FRAME' ? newQty : 0;
+        product.lensQuantity = product.productType === 'LENS' ? newQty : 0;
+        await product.save();
+
+        await InventoryLog.create({
+          productUniqueNumber: item.brandUniqueNumber,
+          productId: product._id,
+          brandName: item.brandName || product.brandName,
+          productType: item.productType || product.productType,
+          movementType: 'DELIVERY_REVERSED',
+          quantity: qty,
+          previousStock: prev,
+          newStock: newQty,
+          referenceOrderNumber: sale.stickerNumber,
+          performedBy: user?.id || 'system',
+          performedByName: user?.fullName || 'User',
+          notes: `Stock restored upon delivery status changed from DELIVERED to ${newStatus} (Order ${sale.stickerNumber})`,
+          date: getIndianDateStr(),
+          time: new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }),
+        });
+      }
+    }
+    sale.stockDeducted = false;
+  }
 };
 
 export const getNextAtomicStickerNumber = async (): Promise<string> => {
@@ -220,11 +338,13 @@ export const getAllSales = async (req: AuthRequest, res: Response): Promise<void
       summaryRemaining += s.remainingBalance || 0;
     });
 
+    const isSalesperson = req.user?.role === 'SALESPERSON';
+
     res.json({
       success: true,
       message: 'Sales retrieved successfully',
       data: {
-        content: sales.map((s) => s.toJSON()),
+        content: sales.map((s) => sanitizeSaleResponse(s, isSalesperson)),
         page,
         size,
         totalElements,
@@ -234,9 +354,9 @@ export const getAllSales = async (req: AuthRequest, res: Response): Promise<void
           totalCount: totalElements,
           totalSellingAmount: summarySelling,
           totalDiscounts: summaryDiscount,
-          totalProfit: summaryProfit,
           totalAdvanceCollected: summaryAdvance,
           outstandingBalance: summaryRemaining,
+          ...(isSalesperson ? {} : { totalProfit: summaryProfit }),
         },
       },
     });
@@ -257,7 +377,8 @@ export const getSaleById = async (req: AuthRequest, res: Response): Promise<void
       res.status(403).json({ success: false, message: 'Access denied: You can only view your own orders', data: null });
       return;
     }
-    res.json({ success: true, message: 'Sale record retrieved', data: sale.toJSON() });
+    const isSalesperson = req.user?.role === 'SALESPERSON';
+    res.json({ success: true, message: 'Sale record retrieved', data: sanitizeSaleResponse(sale, isSalesperson) });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message, data: null });
   }
@@ -314,6 +435,7 @@ export const getCustomerProfile = async (req: AuthRequest, res: Response): Promi
       }
     });
 
+    const isSalesperson = req.user?.role === 'SALESPERSON';
     res.json({
       success: true,
       message: 'Customer profile retrieved',
@@ -324,7 +446,7 @@ export const getCustomerProfile = async (req: AuthRequest, res: Response): Promi
         totalPurchaseAmount,
         totalPaymentsReceived,
         outstandingBalance,
-        orders: orders.map((o) => o.toJSON()),
+        orders: orders.map((o) => sanitizeSaleResponse(o, isSalesperson)),
         allPayments,
       },
     });
@@ -339,6 +461,7 @@ export const createSale = async (req: AuthRequest, res: Response): Promise<void>
       stickerNumber,
       companyName,
       productType = 'FRAME',
+      items,
       costPrice,
       originalSellingPrice,
       discountType = 'NONE',
@@ -363,7 +486,7 @@ export const createSale = async (req: AuthRequest, res: Response): Promise<void>
       return;
     }
 
-    if (!companyName || !expectedDeliveryDate || !customerName) {
+    if (!expectedDeliveryDate || !customerName) {
       res.status(400).json({ success: false, message: 'Missing required order fields', data: null });
       return;
     }
@@ -377,16 +500,13 @@ export const createSale = async (req: AuthRequest, res: Response): Promise<void>
       if (/^\d+$/.test(cleanSticker)) {
         cleanSticker = `STK-${cleanSticker}`;
       } else if (!cleanSticker.startsWith('STK-')) {
-        // Extract numeric part and re-prefix
         const numMatch = cleanSticker.match(/(\d+)/);
         if (numMatch) {
           cleanSticker = `STK-${numMatch[1]}`;
         }
       }
-      // Check if provided sticker exists
       const existing = await Sale.findOne({ stickerNumber: cleanSticker });
       if (existing) {
-        // If auto-generated collision or duplicate, atomically generate next number
         cleanSticker = await getNextAtomicStickerNumber();
       }
     }
@@ -400,6 +520,63 @@ export const createSale = async (req: AuthRequest, res: Response): Promise<void>
         salespersonId = sp._id.toString();
         salespersonName = sp.fullName;
       }
+    }
+
+    // Process Multiple Product Items or fallback to single product
+    const finalItems: ISaleItem[] = [];
+    let subtotalCalculated = 0;
+    let costCalculated = 0;
+    const brandSet: string[] = [];
+    const typeSet: string[] = [];
+
+    if (Array.isArray(items) && items.length > 0) {
+      for (const it of items) {
+        const itQty = Math.max(1, parseInt(String(it.quantity || 1), 10));
+        const itPrice = Math.max(0, parseFloat(String(it.unitPrice || 0)));
+        const itTotal = Math.max(0, parseFloat(String(it.totalPrice || (itPrice * itQty))));
+        const itCost = it.costPrice !== undefined ? Math.max(0, parseFloat(String(it.costPrice || 0))) : 0;
+
+        subtotalCalculated += itTotal;
+        costCalculated += (itCost * itQty);
+
+        const bName = String(it.brandName || '').trim();
+        if (bName && !brandSet.includes(bName)) brandSet.push(bName);
+        const pType = String(it.productType || 'FRAME').toUpperCase() === 'LENS' ? 'LENS' : 'FRAME';
+        if (!typeSet.includes(pType)) typeSet.push(pType);
+
+        finalItems.push({
+          brandName: bName,
+          productType: pType,
+          brandUniqueNumber: String(it.brandUniqueNumber || '').trim().toUpperCase(),
+          productIdentification: String(it.productIdentification || '').trim(),
+          quantity: itQty,
+          unitPrice: itPrice,
+          totalPrice: itTotal,
+          costPrice: itCost,
+        });
+      }
+
+      originalSellingPrice = subtotalCalculated;
+      costPrice = costCalculated;
+      companyName = brandSet.join(', ') || companyName || 'Optical';
+      productType = typeSet.length === 1 ? typeSet[0] as any : 'UNSPECIFIED';
+    } else {
+      // Single product legacy fallback
+      const numOrig = Math.max(0, Number(originalSellingPrice) || 0);
+      const numC = Math.max(0, Number(costPrice) || 0);
+      const singleType = String(productType).toUpperCase() === 'LENS' ? 'LENS' : 'FRAME';
+      const singleBrand = String(companyName || 'Optical').trim();
+
+      finalItems.push({
+        brandName: singleBrand,
+        productType: singleType,
+        brandUniqueNumber: cleanSticker,
+        productIdentification: `${singleBrand} (${singleType})`,
+        quantity: 1,
+        unitPrice: numOrig,
+        totalPrice: numOrig,
+        costPrice: numC,
+      });
     }
 
     const numCost = Number(costPrice) || 0;
@@ -433,7 +610,7 @@ export const createSale = async (req: AuthRequest, res: Response): Promise<void>
       });
     }
 
-    const validProductType = ['FRAME', 'LENS'].includes(String(productType).toUpperCase())
+    const validProductType = ['FRAME', 'LENS', 'UNSPECIFIED'].includes(String(productType).toUpperCase())
       ? String(productType).toUpperCase()
       : 'FRAME';
 
@@ -450,6 +627,8 @@ export const createSale = async (req: AuthRequest, res: Response): Promise<void>
           stickerNumber: cleanSticker,
           companyName: String(companyName).trim(),
           productType: validProductType,
+          items: finalItems,
+          stockDeducted: false,
           costPrice: numCost,
           originalSellingPrice: numOrigSelling,
           discountType,
@@ -474,7 +653,6 @@ export const createSale = async (req: AuthRequest, res: Response): Promise<void>
         break;
       } catch (err: any) {
         if (err.code === 11000) {
-          // Concurrency conflict: get next atomic sticker and retry
           cleanSticker = await getNextAtomicStickerNumber();
           attempts++;
         } else {
@@ -487,6 +665,12 @@ export const createSale = async (req: AuthRequest, res: Response): Promise<void>
       throw new Error('Failed to create order due to persistent sticker number conflict. Please try again.');
     }
 
+    // REQUIREMENT B.3: ONLY DEDUCT STOCK IF DELIVERED
+    if (validDeliveryStatus === 'DELIVERED') {
+      await handleStockTransition(sale, 'PENDING', 'DELIVERED', req.user);
+      await sale.save();
+    }
+
     await AuditLog.create({
       action: 'CREATE_SALE',
       entityType: 'SALE',
@@ -497,7 +681,12 @@ export const createSale = async (req: AuthRequest, res: Response): Promise<void>
       timestamp: new Date().toISOString(),
     });
 
-    res.status(201).json({ success: true, message: 'Sale created successfully', data: sale.toJSON() });
+    const isSalesperson = req.user?.role === 'SALESPERSON';
+    res.status(201).json({
+      success: true,
+      message: 'Sale created successfully',
+      data: sanitizeSaleResponse(sale, isSalesperson),
+    });
   } catch (error: any) {
     console.error('createSale error:', error);
     res.status(500).json({ success: false, message: error.message, data: null });
@@ -521,6 +710,7 @@ export const updateSale = async (req: AuthRequest, res: Response): Promise<void>
     const {
       companyName,
       productType,
+      items,
       costPrice,
       originalSellingPrice,
       discountType,
@@ -547,8 +737,51 @@ export const updateSale = async (req: AuthRequest, res: Response): Promise<void>
       sale.customerMobile = cleanMobile;
     }
 
-    if (companyName) sale.companyName = String(companyName).trim();
-    if (productType && ['FRAME', 'LENS', 'UNSPECIFIED'].includes(String(productType).toUpperCase())) {
+    if (Array.isArray(items) && items.length > 0) {
+      const normalizedItems: ISaleItem[] = [];
+      let subtotalCalc = 0;
+      let costCalc = 0;
+      const brandList: string[] = [];
+      const typeList: string[] = [];
+
+      for (const it of items) {
+        const itQty = Math.max(1, parseInt(String(it.quantity || 1), 10));
+        const itPrice = Math.max(0, parseFloat(String(it.unitPrice || 0)));
+        const itTotal = Math.max(0, parseFloat(String(it.totalPrice || (itPrice * itQty))));
+        const itCost = it.costPrice !== undefined ? Math.max(0, parseFloat(String(it.costPrice || 0))) : 0;
+
+        subtotalCalc += itTotal;
+        costCalc += (itCost * itQty);
+
+        const bName = String(it.brandName || '').trim();
+        if (bName && !brandList.includes(bName)) brandList.push(bName);
+        const pType = String(it.productType || 'FRAME').toUpperCase() === 'LENS' ? 'LENS' : 'FRAME';
+        if (!typeList.includes(pType)) typeList.push(pType);
+
+        normalizedItems.push({
+          brandName: bName,
+          productType: pType,
+          brandUniqueNumber: String(it.brandUniqueNumber || '').trim().toUpperCase(),
+          productIdentification: String(it.productIdentification || '').trim(),
+          quantity: itQty,
+          unitPrice: itPrice,
+          totalPrice: itTotal,
+          costPrice: itCost,
+        });
+      }
+
+      sale.items = normalizedItems;
+      sale.companyName = brandList.join(', ') || sale.companyName;
+      sale.productType = typeList.length === 1 ? typeList[0] as any : 'UNSPECIFIED';
+      sale.originalSellingPrice = subtotalCalc;
+      if (req.user?.role === 'ADMIN' && costCalc > 0) {
+        sale.costPrice = costCalc;
+      }
+    } else if (companyName) {
+      sale.companyName = String(companyName).trim();
+    }
+
+    if (productType && ['FRAME', 'LENS', 'UNSPECIFIED'].includes(String(productType).toUpperCase()) && (!items || items.length === 0)) {
       sale.productType = String(productType).toUpperCase() as any;
     }
     if (expectedDeliveryDate) sale.expectedDeliveryDate = expectedDeliveryDate;
@@ -556,10 +789,15 @@ export const updateSale = async (req: AuthRequest, res: Response): Promise<void>
     if (paymentMethod) sale.paymentMethod = paymentMethod;
 
     // Delivery Status update in Customer Editing
+    const prevDeliveryStatus = sale.deliveryStatus;
+    let targetDeliveryStatus = prevDeliveryStatus;
+    let deliveryChanged = false;
+
     if (deliveryStatus !== undefined) {
       const newStatus: DeliveryStatus = String(deliveryStatus).toUpperCase() === 'DELIVERED' ? 'DELIVERED' : 'PENDING';
-      const prevStatus = sale.deliveryStatus;
-      if (newStatus !== prevStatus) {
+      if (newStatus !== prevDeliveryStatus) {
+        targetDeliveryStatus = newStatus;
+        deliveryChanged = true;
         sale.deliveryStatus = newStatus;
         if (newStatus === 'DELIVERED') {
           sale.deliveredAt = new Date();
@@ -575,7 +813,7 @@ export const updateSale = async (req: AuthRequest, res: Response): Promise<void>
           entityId: sale._id.toString(),
           performedBy: req.user?.id || 'system',
           performedByName: req.user?.fullName || 'User',
-          details: `Delivery status changed from ${prevStatus} to ${newStatus} for ${sale.stickerNumber} (${sale.customerName})`,
+          details: `Delivery status changed from ${prevDeliveryStatus} to ${newStatus} for ${sale.stickerNumber} (${sale.customerName})`,
           timestamp: new Date().toISOString(),
         });
       }
@@ -601,9 +839,9 @@ export const updateSale = async (req: AuthRequest, res: Response): Promise<void>
       }
     }
 
-    if (originalSellingPrice !== undefined || costPrice !== undefined || discountValue !== undefined) {
-      const numOrigSelling = originalSellingPrice !== undefined ? Number(originalSellingPrice) : sale.originalSellingPrice;
-      const numCost = costPrice !== undefined ? Number(costPrice) : sale.costPrice;
+    if (originalSellingPrice !== undefined || costPrice !== undefined || discountValue !== undefined || (Array.isArray(items) && items.length > 0)) {
+      const numOrigSelling = sale.originalSellingPrice;
+      const numCost = req.user?.role === 'ADMIN' && costPrice !== undefined ? Number(costPrice) : sale.costPrice;
       const dType = discountType !== undefined ? discountType : sale.discountType;
       const dVal = discountValue !== undefined ? Number(discountValue) : sale.discountValue;
 
@@ -626,6 +864,10 @@ export const updateSale = async (req: AuthRequest, res: Response): Promise<void>
       sale.grossProfit = sellingPrice - numCost;
     }
 
+    if (deliveryChanged) {
+      await handleStockTransition(sale, prevDeliveryStatus, targetDeliveryStatus, req.user);
+    }
+
     await sale.save();
 
     await AuditLog.create({
@@ -638,7 +880,8 @@ export const updateSale = async (req: AuthRequest, res: Response): Promise<void>
       timestamp: new Date().toISOString(),
     });
 
-    res.json({ success: true, message: 'Sale updated successfully', data: sale.toJSON() });
+    const isSalesperson = req.user?.role === 'SALESPERSON';
+    res.json({ success: true, message: 'Sale updated successfully', data: sanitizeSaleResponse(sale, isSalesperson) });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message, data: null });
   }
@@ -661,31 +904,35 @@ export const updateDeliveryStatus = async (req: AuthRequest, res: Response): Pro
     const newStatus: DeliveryStatus = String(rawStatus).toUpperCase() === 'DELIVERED' ? 'DELIVERED' : 'PENDING';
     const prevStatus = sale.deliveryStatus;
 
-    sale.deliveryStatus = newStatus;
-    if (newStatus === 'DELIVERED') {
-      sale.deliveredAt = new Date();
-      sale.deliveredBy = req.user?.fullName || 'User';
-    } else {
-      sale.deliveredAt = undefined;
-      sale.deliveredBy = undefined;
+    if (newStatus !== prevStatus) {
+      sale.deliveryStatus = newStatus;
+      if (newStatus === 'DELIVERED') {
+        sale.deliveredAt = new Date();
+        sale.deliveredBy = req.user?.fullName || 'User';
+      } else {
+        sale.deliveredAt = undefined;
+        sale.deliveredBy = undefined;
+      }
+
+      await handleStockTransition(sale, prevStatus, newStatus, req.user);
+      await sale.save();
+
+      await AuditLog.create({
+        action: 'UPDATE_DELIVERY_STATUS',
+        entityType: 'SALE',
+        entityId: sale._id.toString(),
+        performedBy: req.user?.id || 'system',
+        performedByName: req.user?.fullName || 'User',
+        details: `Delivery status changed from ${prevStatus} to ${newStatus} for ${sale.stickerNumber} by ${req.user?.fullName}`,
+        timestamp: new Date().toISOString(),
+      });
     }
 
-    await sale.save();
-
-    await AuditLog.create({
-      action: 'UPDATE_DELIVERY_STATUS',
-      entityType: 'SALE',
-      entityId: sale._id.toString(),
-      performedBy: req.user?.id || 'system',
-      performedByName: req.user?.fullName || 'User',
-      details: `Delivery status changed from ${prevStatus} to ${newStatus} for ${sale.stickerNumber} by ${req.user?.fullName}`,
-      timestamp: new Date().toISOString(),
-    });
-
+    const isSalesperson = req.user?.role === 'SALESPERSON';
     res.json({
       success: true,
       message: `Delivery status updated to ${newStatus}`,
-      data: sale.toJSON(),
+      data: sanitizeSaleResponse(sale, isSalesperson),
     });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message, data: null });
@@ -738,10 +985,11 @@ export const clearBalance = async (req: AuthRequest, res: Response): Promise<voi
       });
     }
 
+    const isSalesperson = req.user?.role === 'SALESPERSON';
     res.json({
       success: true,
       message: `Customer balance of ₹${remainingToClear} has been cleared and payment transaction recorded.`,
-      data: sale.toJSON(),
+      data: sanitizeSaleResponse(sale, isSalesperson),
     });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message, data: null });
@@ -798,7 +1046,8 @@ export const addPayment = async (req: AuthRequest, res: Response): Promise<void>
       timestamp: new Date().toISOString(),
     });
 
-    res.json({ success: true, message: 'Payment recorded successfully', data: sale.toJSON() });
+    const isSalesperson = req.user?.role === 'SALESPERSON';
+    res.json({ success: true, message: 'Payment recorded successfully', data: sanitizeSaleResponse(sale, isSalesperson) });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message, data: null });
   }
@@ -1136,53 +1385,86 @@ export const getDashboardStats = async (req: AuthRequest, res: Response): Promis
       { status: 'Lab Pending', count: pendingOrders },
     ];
 
+    const allProducts = await Product.find({ active: true }).select('quantity productType lowStockThreshold');
+    let totalInventoryQuantity = 0;
+    let totalFrameQuantity = 0;
+    let totalLensQuantity = 0;
+    let lowStockCount = 0;
+
+    allProducts.forEach((p) => {
+      const q = p.quantity || 0;
+      totalInventoryQuantity += q;
+      if (p.productType === 'FRAME') {
+        totalFrameQuantity += q;
+      } else {
+        totalLensQuantity += q;
+      }
+      if (q <= (p.lowStockThreshold ?? 5)) {
+        lowStockCount++;
+      }
+    });
+
+    const isSalesperson = req.user?.role === 'SALESPERSON';
+    const computedProfitMargin = totalRevenue > 0 ? ((grossProfit / totalRevenue) * 100).toFixed(1) : '0';
+
+    const responseData: any = {
+      totalOrders: sales.length,
+      totalRevenue,
+      netSales: totalRevenue,
+      totalDiscounts,
+      advanceCollected,
+      remainingBalance,
+      deliveredOrders,
+      pendingOrders,
+      deliverySuccessRate,
+      deliveryFulfilmentRate: deliverySuccessRate,
+      deliveryStatusData,
+      todayCollection,
+      todayOrders,
+      todayRevenue,
+      todayDiscount,
+      averageCustomerRating,
+      totalCustomerFeedback,
+      dailySales,
+      dailyTrends,
+      companySales,
+      brandDistribution,
+      paymentMethodDistribution,
+      salespersonPerformance: isSalesperson ? [] : salespersonPerformance,
+      inventorySummary: {
+        totalQuantity: totalInventoryQuantity,
+        frameQuantity: totalFrameQuantity,
+        lensQuantity: totalLensQuantity,
+        lowStockCount,
+        totalProducts: allProducts.length,
+      },
+      frameAnalytics: {
+        totalOrders: frameOrders,
+        revenue: frameRevenue,
+        discount: frameDiscount,
+        topBrands: topFrameBrands,
+        ...(isSalesperson ? {} : { cost: frameCost, profit: frameProfit }),
+      },
+      lensAnalytics: {
+        totalOrders: lensOrders,
+        revenue: lensRevenue,
+        discount: lensDiscount,
+        topBrands: topLensBrands,
+        ...(isSalesperson ? {} : { cost: lensCost, profit: lensProfit }),
+      },
+    };
+
+    if (!isSalesperson) {
+      responseData.totalCost = totalCost;
+      responseData.grossProfit = grossProfit;
+      responseData.profitMargin = computedProfitMargin;
+      responseData.todayProfit = todayProfit;
+    }
+
     res.json({
       success: true,
       message: 'Dashboard statistics retrieved',
-      data: {
-        totalOrders: sales.length,
-        totalRevenue,
-        netSales: totalRevenue,
-        totalCost,
-        grossProfit,
-        totalDiscounts,
-        advanceCollected,
-        remainingBalance,
-        deliveredOrders,
-        pendingOrders,
-        deliverySuccessRate,
-        deliveryFulfilmentRate: deliverySuccessRate,
-        deliveryStatusData,
-        todayCollection,
-        todayOrders,
-        todayRevenue,
-        todayDiscount,
-        todayProfit,
-        averageCustomerRating,
-        totalCustomerFeedback,
-        dailySales,
-        dailyTrends,
-        companySales,
-        brandDistribution,
-        paymentMethodDistribution,
-        salespersonPerformance,
-        frameAnalytics: {
-          totalOrders: frameOrders,
-          revenue: frameRevenue,
-          cost: frameCost,
-          profit: frameProfit,
-          discount: frameDiscount,
-          topBrands: topFrameBrands,
-        },
-        lensAnalytics: {
-          totalOrders: lensOrders,
-          revenue: lensRevenue,
-          cost: lensCost,
-          profit: lensProfit,
-          discount: lensDiscount,
-          topBrands: topLensBrands,
-        },
-      },
+      data: responseData,
     });
   } catch (error: any) {
     console.error('getDashboardStats error:', error);

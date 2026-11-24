@@ -133,3 +133,57 @@ export const deletePrivateExcelBlob = async (urlOrPathname: string): Promise<voi
   await del(urlOrPathname, getBlobAuthOptions());
 };
 
+export const MAX_PDF_FILE_SIZE_BYTES = 15 * 1024 * 1024; // 15 MB
+
+export const isPdfFileName = (fileName: string): boolean => {
+  return /\.pdf$/i.test(String(fileName || '').trim());
+};
+
+export const buildSupplierPdfBlobPathname = (supplierName: string, originalFileName: string): string => {
+  const safeSupplier = String(supplierName || 'supplier').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeName = sanitizeFileName(originalFileName);
+  const timestamp = Date.now();
+  return `supplier-documents/${safeSupplier}/${timestamp}_${safeName}`;
+};
+
+export const uploadPrivatePdfBlob = async (
+  pathname: string,
+  buffer: Buffer,
+  contentType = 'application/pdf'
+): Promise<PutBlobResult> => {
+  if (!isBlobStorageConfigured()) {
+    throw new Error(
+      'Vercel Blob Storage is not configured. Please set BLOB_READ_WRITE_TOKEN in backend environment variables.'
+    );
+  }
+
+  return put(pathname, buffer, {
+    access: 'private',
+    addRandomSuffix: true,
+    contentType,
+    ...getBlobAuthOptions(),
+  });
+};
+
+export const getPrivatePdfBlob = async (
+  urlOrPathname: string
+): Promise<GetBlobResult | null> => {
+  if (!isBlobStorageConfigured()) {
+    throw new Error(
+      'Vercel Blob Storage is not configured. Please set BLOB_READ_WRITE_TOKEN in backend environment variables.'
+    );
+  }
+
+  return get(urlOrPathname, {
+    access: 'private',
+    useCache: false,
+    ...getBlobAuthOptions(),
+  });
+};
+
+export const deletePrivatePdfBlob = async (urlOrPathname: string): Promise<void> => {
+  if (!isBlobStorageConfigured() || !urlOrPathname) return;
+  await del(urlOrPathname, getBlobAuthOptions());
+};
+
+
