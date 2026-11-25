@@ -583,6 +583,25 @@ export const seedMasterProductsAndSuppliers = async (): Promise<void> => {
       console.log(`[Seeder] Seeded ${sampleProducts.length} initial Master Products and opening inventory.`);
     }
 
+    // Ensure sample optical supplier invoice products exist (OCTAVIA models, Ray-Ban variants)
+    const invoiceSampleVariants = [
+      { brandName: 'OCTAVIA', productType: 'FRAME' as const, brandUniqueNumber: '019674', productIdentification: 'M-259416-2250', price: 450, costPrice: 290, quantity: 2, frameQuantity: 2, lensQuantity: 0, lowStockThreshold: 1, stockBatchType: 'NEW STOCK' as const, stockBatchDate: '2026-08-12' },
+      { brandName: 'OCTAVIA', productType: 'FRAME' as const, brandUniqueNumber: '019673', productIdentification: 'M-259415-2250', price: 450, costPrice: 290, quantity: 2, frameQuantity: 2, lensQuantity: 0, lowStockThreshold: 1, stockBatchType: 'NEW STOCK' as const, stockBatchDate: '2026-08-12' },
+      { brandName: 'BEST FASHION EYEWEAR', productType: 'FRAME' as const, brandUniqueNumber: '017985', productIdentification: 'M-82206-2210', price: 400, costPrice: 250, quantity: 2, frameQuantity: 2, lensQuantity: 0, lowStockThreshold: 1, stockBatchType: 'NEW STOCK' as const, stockBatchDate: '2026-08-12' },
+      { brandName: 'Ray-Ban', productType: 'FRAME' as const, brandUniqueNumber: 'RB101', productIdentification: 'RB Classic', price: 60000, costPrice: 50000, quantity: 5, frameQuantity: 5, lensQuantity: 0, lowStockThreshold: 2, stockBatchType: 'OLD STOCK' as const, stockBatchDate: '2026-01-15' },
+      { brandName: 'Ray-Ban', productType: 'FRAME' as const, brandUniqueNumber: 'RB102', productIdentification: 'RB Classic', price: 65000, costPrice: 55000, quantity: 10, frameQuantity: 10, lensQuantity: 0, lowStockThreshold: 2, stockBatchType: 'NEW STOCK' as const, stockBatchDate: '2026-06-20' },
+    ];
+
+    for (const vp of invoiceSampleVariants) {
+      const exists = await Product.findOne({ brandUniqueNumber: vp.brandUniqueNumber });
+      if (!exists) {
+        await Product.create({
+          ...vp,
+          createdBy: 'SYSTEM_SEED',
+        });
+      }
+    }
+
     const supplierCount = await Supplier.countDocuments();
     if (supplierCount === 0) {
       const sup1 = await Supplier.create({

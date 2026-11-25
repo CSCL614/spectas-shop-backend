@@ -245,7 +245,13 @@ export const getAllSales = async (req: AuthRequest, res: Response): Promise<void
     // Role-based data isolation & Admin/Salesperson owner filtering
     await applyOwnerFilter(req, query, salespersonId);
 
-    if (deliveryStatus && (deliveryStatus === 'PENDING' || deliveryStatus === 'DELIVERED')) {
+    const isSalesperson = req.user?.role === 'SALESPERSON';
+
+    // Requirement 5: Sales Executives should see ONLY Undelivered and Partially Delivered orders.
+    // Completely Delivered orders should no longer appear in the Sales Executive My Orders list.
+    if (isSalesperson) {
+      query.deliveryStatus = { $ne: 'DELIVERED' };
+    } else if (deliveryStatus && (deliveryStatus === 'PENDING' || deliveryStatus === 'DELIVERED')) {
       query.deliveryStatus = deliveryStatus;
     }
 
@@ -337,8 +343,6 @@ export const getAllSales = async (req: AuthRequest, res: Response): Promise<void
       summaryAdvance += s.advanceAmount || 0;
       summaryRemaining += s.remainingBalance || 0;
     });
-
-    const isSalesperson = req.user?.role === 'SALESPERSON';
 
     res.json({
       success: true,
@@ -1408,7 +1412,7 @@ export const getDashboardStats = async (req: AuthRequest, res: Response): Promis
     const computedProfitMargin = totalRevenue > 0 ? ((grossProfit / totalRevenue) * 100).toFixed(1) : '0';
 
     const responseData: any = {
-      totalOrders: sales.length,
+      totalOrders: isSalesperson ? pendingOrders : sales.length,
       totalRevenue,
       netSales: totalRevenue,
       totalDiscounts,

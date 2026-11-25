@@ -18,6 +18,49 @@ const getIndianTimeStr = (): string => {
 };
 
 /**
+ * Annotates products with dynamic or stored stockIndicator ('NEW STOCK' | 'OLD STOCK') and stockBatchDate
+ */
+export const annotateProductStockIndicators = (products: any[]): any[] => {
+  // Group products by normalized brand + model (productIdentification)
+  const groupMap = new Map<string, { latestCreatedAt: number; count: number }>();
+
+  products.forEach((doc) => {
+    const p = doc.toJSON ? doc.toJSON() : { ...doc };
+    const brand = String(p.brandName || '').trim().toUpperCase();
+    const model = String(p.productIdentification || p.brandName || '').trim().toUpperCase();
+    const key = `${brand}::${model}`;
+    const pTime = p.createdAt ? new Date(p.createdAt).getTime() : 0;
+    const cur = groupMap.get(key) || { latestCreatedAt: 0, count: 0 };
+    if (pTime > cur.latestCreatedAt) {
+      cur.latestCreatedAt = pTime;
+    }
+    cur.count += 1;
+    groupMap.set(key, cur);
+  });
+
+  return products.map((doc) => {
+    const p = doc.toJSON ? doc.toJSON() : { ...doc };
+    const brand = String(p.brandName || '').trim().toUpperCase();
+    const model = String(p.productIdentification || p.brandName || '').trim().toUpperCase();
+    const key = `${brand}::${model}`;
+    const groupInfo = groupMap.get(key);
+
+    const pTime = p.createdAt ? new Date(p.createdAt).getTime() : 0;
+    const isLatest = !groupInfo || groupInfo.count <= 1 || pTime >= groupInfo.latestCreatedAt;
+
+    const stockIndicator = p.stockBatchType || (isLatest ? 'NEW STOCK' : 'OLD STOCK');
+    const stockBatchDate = p.stockBatchDate || (p.createdAt ? new Date(p.createdAt).toISOString().split('T')[0] : '');
+
+    return {
+      ...p,
+      stockIndicator,
+      stockBatchDate,
+      isNewStock: stockIndicator === 'NEW STOCK',
+    };
+  });
+};
+
+/**
  * Filter out confidential cost information if user is a SALESPERSON
  */
 const sanitizeProduct = (doc: any, isSalesperson: boolean) => {
@@ -69,15 +112,17 @@ export const getProducts = async (req: AuthRequest, res: Response): Promise<void
     const totalElements = await Product.countDocuments(query);
     const totalPages = Math.ceil(totalElements / size);
     const products = await Product.find(query)
-      .sort({ brandName: 1, brandUniqueNumber: 1 })
+      .sort({ brandName: 1, productIdentification: 1, createdAt: -1 })
       .skip(page * size)
       .limit(size);
+
+    const annotated = annotateProductStockIndicators(products);
 
     res.json({
       success: true,
       message: 'Products retrieved successfully',
       data: {
-        content: products.map((p) => sanitizeProduct(p, isSalesperson)),
+        content: annotated.map((p) => sanitizeProduct(p, isSalesperson)),
         page,
         size,
         totalElements,
@@ -92,6 +137,7 @@ export const getProducts = async (req: AuthRequest, res: Response): Promise<void
 
 // GET /api/products/search-catalog
 // Fast catalog search for autocomplete in New Order Entry (accessible by both Admin & Sales Executive)
+// Requirement 8: Search by brand, model, unique number, partial model number, case-insensitive, return ALL matching active products
 export const searchCatalog = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const isSalesperson = req.user?.role === 'SALESPERSON';
@@ -101,7 +147,7 @@ export const searchCatalog = async (req: AuthRequest, res: Response): Promise<vo
 
     const query: any = { active: true };
     if (brand) {
-      query.brandName = new RegExp(`^${brand}$`, 'i');
+      query.brandName = new RegExp(brand.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i');
     }
     if (productType && (productType === 'FRAME' || productType === 'LENS')) {
       query.productType = productType;
@@ -111,15 +157,18 @@ export const searchCatalog = async (req: AuthRequest, res: Response): Promise<vo
       query.$or = [{ brandUniqueNumber: reg }, { productIdentification: reg }, { brandName: reg }];
     }
 
+    // Return all matching active products (no premature 50 limit truncation)
     const products = await Product.find(query)
-      .limit(50)
+      .limit(500)
       .select('-__v')
-      .sort({ brandName: 1, brandUniqueNumber: 1 });
+      .sort({ brandName: 1, productIdentification: 1, createdAt: -1 });
+
+    const annotated = annotateProductStockIndicators(products);
 
     res.json({
       success: true,
       message: 'Product catalog results',
-      data: products.map((p) => sanitizeProduct(p, isSalesperson)),
+      data: annotated.map((p) => sanitizeProduct(p, isSalesperson)),
     });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message, data: null });
@@ -448,9 +497,9 @@ export const downloadMasterProductTemplate = async (_req: AuthRequest, res: Resp
     workbook.creator = 'SRI SAI SMART OPTICALS';
     const worksheet = workbook.addWorksheet('Master Products');
 
-    // Expected Excel Format: Sticker Number, Company Name, Frames, Lenses, Quantity, Cost Price, Original Selling Price
+    // Expected Excel Format: Unique Number, Company Name, Frames, Lenses, Quantity, Cost Price, Original Selling Price
     worksheet.columns = [
-      { header: 'Sticker Number', key: 'brandUniqueNumber', width: 18 },
+      { header: 'Unique Number', key: 'brandUniqueNumber', width: 18 },
       { header: 'Company Name', key: 'brandName', width: 22 },
       { header: 'Frames', key: 'frames', width: 14 },
       { header: 'Lenses', key: 'lenses', width: 14 },
@@ -540,9 +589,9 @@ export const exportProductsExcel = async (_req: AuthRequest, res: Response): Pro
     workbook.creator = 'SRI SAI SMART OPTICALS';
     const worksheet = workbook.addWorksheet('Master Product Inventory');
 
-    // Expected Excel Format: Sticker Number, Company Name, Frames, Lenses, Quantity, Cost Price, Original Selling Price
+    // Expected Excel Format: Unique Number, Company Name, Frames, Lenses, Quantity, Cost Price, Original Selling Price
     worksheet.columns = [
-      { header: 'Sticker Number', key: 'brandUniqueNumber', width: 18 },
+      { header: 'Unique Number', key: 'brandUniqueNumber', width: 18 },
       { header: 'Company Name', key: 'brandName', width: 22 },
       { header: 'Frames', key: 'frames', width: 14 },
       { header: 'Lenses', key: 'lenses', width: 14 },
@@ -665,7 +714,7 @@ export const importProductsExcel = async (req: AuthRequest, res: Response): Prom
       }
 
       if (!brandUniqueNumber) {
-        errors.push({ rowNumber, field: 'Sticker Number', error: 'Sticker/Unique number is required' });
+        errors.push({ rowNumber, field: 'Unique Number', error: 'Unique number is required' });
         continue;
       }
 
@@ -673,7 +722,7 @@ export const importProductsExcel = async (req: AuthRequest, res: Response): Prom
       if (seenInFile.has(cleanUnique)) {
         errors.push({
           rowNumber,
-          field: 'Sticker Number',
+          field: 'Unique Number',
           error: `Duplicate product identification number "${cleanUnique}" found in sheet`,
         });
         continue;

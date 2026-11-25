@@ -12,6 +12,8 @@ export interface IProduct extends Document {
   lensQuantity: number;
   lowStockThreshold: number;
   stockStatus: 'IN_STOCK' | 'LOW_STOCK' | 'OUT_OF_STOCK';
+  stockBatchDate?: string;
+  stockBatchType?: 'NEW STOCK' | 'OLD STOCK';
   active: boolean;
   createdBy: string;
   createdAt: Date;
@@ -42,6 +44,8 @@ const ProductSchema = new Schema<IProduct>(
     frameQuantity: { type: Number, min: 0, default: 0 },
     lensQuantity: { type: Number, min: 0, default: 0 },
     lowStockThreshold: { type: Number, min: 0, default: 5 },
+    stockBatchDate: { type: String, default: '', trim: true },
+    stockBatchType: { type: String, enum: ['NEW STOCK', 'OLD STOCK', ''], default: '' },
     active: { type: Boolean, default: true },
     createdBy: { type: String, default: 'ADMIN', trim: true },
   },
@@ -64,6 +68,7 @@ const ProductSchema = new Schema<IProduct>(
         }
         ret.frameQuantity = ret.productType === 'FRAME' ? qty : 0;
         ret.lensQuantity = ret.productType === 'LENS' ? qty : 0;
+        ret.stockBatchDate = ret.stockBatchDate || (ret.createdAt ? new Date(ret.createdAt).toISOString().split('T')[0] : '');
         return ret;
       },
     },
